@@ -38,6 +38,7 @@ class SceneEvent:
     color: tuple[int, int, int]
     phases: tuple[EventPhase, ...]
     conditions: dict[str, tuple[str, ...]]
+    rare_tier: int
 
 
 class EventManager:
@@ -53,6 +54,8 @@ class EventManager:
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
         self._rare_events = tuple(event for event in self.events if event.event_type == "rare")
+        self._rare_tier1_events = tuple(event for event in self._rare_events if event.rare_tier == 1)
+        self._rare_tier2_events = tuple(event for event in self._rare_events if event.rare_tier == 2)
         self.active_event: SceneEvent | None = None
         self._active_event_start_time = 0.0
         self._active_event_end_time = 0.0
@@ -198,6 +201,8 @@ class EventManager:
         if phase_parse is None:
             return None
         phases, duration = phase_parse
+        conditions = self._parse_conditions(entry, index)
+        rare_tier = self._parse_rare_tier(entry, index, event_type, conditions)
 
         if weight <= 0 or cooldown < 0.0 or min_runtime < 0.0 or duration <= 0.0:
             LOGGER.warning("Skipping event[%d]: invalid numeric ranges", index)
@@ -221,8 +226,29 @@ class EventManager:
             duration=duration,
             color=color,
             phases=phases,
-            conditions=self._parse_conditions(entry, index),
+            conditions=conditions,
+            rare_tier=rare_tier,
         )
+
+    def _parse_rare_tier(
+        self,
+        entry: dict[str, Any],
+        index: int,
+        event_type: str,
+        conditions: dict[str, tuple[str, ...]],
+    ) -> int:
+        if event_type != "rare":
+            return 0
+
+        scheduler = entry.get("scheduler", {})
+        if isinstance(scheduler, dict):
+            tier = scheduler.get("tier")
+            if tier in (1, 2):
+                return int(tier)
+            if tier is not None:
+                LOGGER.warning("Ignoring invalid scheduler.tier for event[%d]", index)
+
+        return 1 if conditions else 2
 
     def _matches_conditions(self, event: SceneEvent, environment: dict[str, str] | None) -> bool:
         if not event.conditions:
@@ -296,9 +322,21 @@ class EventManager:
         selected_event: SceneEvent | None = None
 
         if self._rare_slot_open(session_time):
-            rare_eligible = self._eligible_pool(self._rare_events, session_time, environment)
-            if rare_eligible:
-                selected_event = random.choices(rare_eligible, weights=[event.weight for event in rare_eligible], k=1)[0]
+            rare_eligible_tier1 = self._eligible_pool(self._rare_tier1_events, session_time, environment)
+            if rare_eligible_tier1:
+                selected_event = random.choices(
+                    rare_eligible_tier1,
+                    weights=[event.weight for event in rare_eligible_tier1],
+                    k=1,
+                )[0]
+            else:
+                rare_eligible_tier2 = self._eligible_pool(self._rare_tier2_events, session_time, environment)
+                if rare_eligible_tier2:
+                    selected_event = random.choices(
+                        rare_eligible_tier2,
+                        weights=[event.weight for event in rare_eligible_tier2],
+                        k=1,
+                    )[0]
 
         if selected_event is None and self._ambient_slot_open(session_time):
             ambient_eligible = self._eligible_pool(self._ambient_events, session_time, environment)
