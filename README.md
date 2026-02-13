@@ -93,6 +93,15 @@ Both pools evaluate event conditions (`weather`, `time_of_day`), per-event coold
 
 The scheduler keeps visual behavior unchanged while improving long-run ecology in burn-in simulations.
 
+### Rare Priority Tier System
+
+Rare slots now resolve in two priority tiers:
+
+- **Tier 1 (priority rares):** rare events with explicit conditions (or `"scheduler": {"tier": 1}`), such as `aurora_faint`, `shooting_star`, `distant_ferry`, and `borkum_buoy`.
+- **Tier 2 (fallback rares):** rare events without conditions (or `"scheduler": {"tier": 2}`), such as `moon_glint`.
+
+When a rare slot opens, the scheduler first checks eligible Tier 1 rares (runtime/cooldown/conditions). If none are eligible, it checks Tier 2. If no rare is eligible in either tier, ambient scheduling continues normally and the rare slot is retried on the next check.
+
 ## Project Structure
 
 ```text

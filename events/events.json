@@ -33,6 +33,9 @@
     {
       "id": "moon_glint",
       "type": "rare",
+      "scheduler": {
+        "tier": 2
+      },
       "weight": 6,
       "cooldown": 20,
       "min_runtime": 45,
@@ -46,6 +49,9 @@
     {
       "id": "borkum_buoy",
       "type": "rare",
+      "scheduler": {
+        "tier": 1
+      },
       "weight": 1,
       "cooldown": 900,
       "min_runtime": 1800,
@@ -81,6 +87,9 @@
     {
       "id": "distant_ferry",
       "type": "rare",
+      "scheduler": {
+        "tier": 1
+      },
       "weight": 2,
       "cooldown": 1200,
       "min_runtime": 900,
@@ -116,6 +125,9 @@
     {
       "id": "shooting_star",
       "type": "rare",
+      "scheduler": {
+        "tier": 1
+      },
       "weight": 1,
       "cooldown": 1800,
       "min_runtime": 600,
@@ -143,6 +155,9 @@
     {
       "id": "aurora_faint",
       "type": "rare",
+      "scheduler": {
+        "tier": 1
+      },
       "weight": 1,
       "cooldown": 2400,
       "min_runtime": 1200,
