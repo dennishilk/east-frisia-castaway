@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import random
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,7 @@ class EventManager:
     are evaluated against absolute session time from :class:`SessionTimer`.
     """
 
-    def __init__(self, event_file: str) -> None:
+    def __init__(self, event_file: str, trace_rare: bool = False) -> None:
         self.rare_min_interval = 600.0
         self.rare_retry_interval = 30.0
         self.ambient_min_interval = 5.0
@@ -70,6 +71,7 @@ class EventManager:
         self._ferry_sprite = self._build_ferry_sprite()
         self._aurora_band: pygame.Surface | None = None
         self._aurora_band_width = 0
+        self._trace_rare = trace_rare
 
     @staticmethod
     def _build_ferry_sprite() -> pygame.Surface:
@@ -298,6 +300,100 @@ class EventManager:
     def _ambient_slot_open(self, session_time: float) -> bool:
         return (session_time - self._last_ambient_event_time) >= self.ambient_min_interval
 
+    @staticmethod
+    def _rng_state_signature() -> dict[str, Any]:
+        state = random.getstate()
+        version, internal_state, gauss_next = state
+        internal_state = tuple(internal_state)
+        preview = list(internal_state[:5])
+        state_hash = hashlib.sha1(repr(state).encode("utf-8")).hexdigest()[:12]
+        return {
+            "version": version,
+            "index": internal_state[-1],
+            "preview": preview,
+            "gauss_next": gauss_next,
+            "state_hash": state_hash,
+        }
+
+    def _trace_rare_selection(
+        self,
+        session_time: float,
+        environment: dict[str, str] | None,
+        tier1_eligible: list[SceneEvent],
+        tier2_eligible: list[SceneEvent],
+        selected_event: SceneEvent | None,
+        selected_tier: int | None,
+        rng_state_used: dict[str, Any] | None,
+    ) -> None:
+        if not self._trace_rare:
+            return
+
+        all_rare = sorted(self._rare_events, key=lambda event: event.name)
+        tier1_names = {event.name for event in tier1_eligible}
+        tier2_names = {event.name for event in tier2_eligible}
+        selected_pool_names = tier1_names if tier1_eligible else tier2_names
+
+        event_rows: list[dict[str, Any]] = []
+        non_selected_reasons: dict[str, str] = {}
+
+        for event in all_rare:
+            time_since = self._time_since_event(session_time, event.name)
+            cooldown_left = max(0.0, event.cooldown - time_since)
+            conditions_exist = bool(event.conditions)
+            conditions_satisfied = self._matches_conditions(event, environment)
+            eligible = self._is_event_eligible(event, session_time, environment)
+            tier_classification = "Tier1" if conditions_exist else "Tier2"
+
+            if eligible and selected_event is not None and event.name != selected_event.name:
+                if event.name not in selected_pool_names:
+                    non_selected_reasons[event.name] = "higher priority tier had eligible events"
+                else:
+                    non_selected_reasons[event.name] = "weighted RNG selection"
+            elif eligible and selected_event is None:
+                if event.name not in selected_pool_names:
+                    non_selected_reasons[event.name] = "higher priority tier had eligible events"
+                else:
+                    non_selected_reasons[event.name] = "no event selected"
+            elif not eligible:
+                if session_time < event.min_runtime:
+                    non_selected_reasons[event.name] = "min_runtime gate"
+                elif cooldown_left > 0.0:
+                    non_selected_reasons[event.name] = "cooldown gate"
+                elif not conditions_satisfied:
+                    non_selected_reasons[event.name] = "conditions mismatch"
+
+            event_rows.append(
+                {
+                    "id": event.name,
+                    "weight": event.weight,
+                    "min_runtime": event.min_runtime,
+                    "cooldown_left": round(cooldown_left, 3),
+                    "conditions_exist": conditions_exist,
+                    "conditions_satisfied": conditions_satisfied,
+                    "eligible": eligible,
+                    "tier": tier_classification,
+                }
+            )
+
+        selection_pool = tier1_eligible if tier1_eligible else tier2_eligible
+        total_weight = sum(event.weight for event in selection_pool)
+        trace_payload = {
+            "session_time": round(session_time, 3),
+            "environment": {
+                "time_of_day": None if environment is None else environment.get("time_of_day"),
+                "weather": None if environment is None else environment.get("weather"),
+            },
+            "rare_events": event_rows,
+            "tier1_eligible": [{"id": event.name, "weight": event.weight} for event in tier1_eligible],
+            "tier2_eligible": [{"id": event.name, "weight": event.weight} for event in tier2_eligible],
+            "selection_tier_used": selected_tier,
+            "combined_weight_for_selection": total_weight,
+            "rng_state_used": rng_state_used,
+            "chosen_event_id": None if selected_event is None else selected_event.name,
+            "not_chosen_reasons": non_selected_reasons,
+        }
+        print(f"[rare-trace] {json.dumps(trace_payload, sort_keys=True)}")
+
     def _build_phase_timestamps(self, event: SceneEvent, start_time: float) -> None:
         self._phase_timestamps = []
         cursor = start_time
@@ -329,7 +425,11 @@ class EventManager:
         if self._rare_slot_open(session_time):
             rare_evaluated = True
             rare_eligible_tier1 = self._eligible_pool(self._rare_tier1_events, session_time, environment)
+            selected_tier: int | None = None
+            rng_state_used: dict[str, Any] | None = None
             if rare_eligible_tier1:
+                selected_tier = 1
+                rng_state_used = self._rng_state_signature()
                 selected_event = random.choices(
                     rare_eligible_tier1,
                     weights=[event.weight for event in rare_eligible_tier1],
@@ -338,11 +438,33 @@ class EventManager:
             else:
                 rare_eligible_tier2 = self._eligible_pool(self._rare_tier2_events, session_time, environment)
                 if rare_eligible_tier2:
+                    selected_tier = 2
+                    rng_state_used = self._rng_state_signature()
                     selected_event = random.choices(
                         rare_eligible_tier2,
                         weights=[event.weight for event in rare_eligible_tier2],
                         k=1,
                     )[0]
+                self._trace_rare_selection(
+                    session_time,
+                    environment,
+                    rare_eligible_tier1,
+                    rare_eligible_tier2,
+                    selected_event,
+                    selected_tier,
+                    rng_state_used,
+                )
+
+            if rare_eligible_tier1:
+                self._trace_rare_selection(
+                    session_time,
+                    environment,
+                    rare_eligible_tier1,
+                    [],
+                    selected_event,
+                    selected_tier,
+                    rng_state_used,
+                )
 
             if selected_event is None:
                 self._next_rare_check_time = session_time + self.rare_retry_interval
