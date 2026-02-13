@@ -102,6 +102,10 @@ Rare slots now resolve in two priority tiers:
 
 When a rare slot opens, the scheduler first checks eligible Tier 1 rares (runtime/cooldown/conditions). If none are eligible, it checks Tier 2. If no rare is eligible in either tier, ambient scheduling continues normally and the rare slot is retried on the next check.
 
+## Atmospheric Tuning
+
+Atmospheric frequency defaults are tuned for calmer long-run balance: `rare_min_interval` now defaults to 300s and `rare_retry_interval` to 20s (while still honoring scheduler values from `events/events.json` when present). Rare conditions were also softened so `aurora_faint` can appear during cloudy nights and `shooting_star` can appear at sunset, with subtle weight balancing (`moon_glint` reduced, `distant_ferry` increased) to keep fallback events from dominating burn-in runs.
+
 ## Project Structure
 
 ```text

@@ -50,8 +50,8 @@ class EventManager:
     """
 
     def __init__(self, event_file: str, trace_rare: bool = False) -> None:
-        self.rare_min_interval = 600.0
-        self.rare_retry_interval = 30.0
+        self.rare_min_interval = 300.0
+        self.rare_retry_interval = 20.0
         self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")

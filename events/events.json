@@ -1,7 +1,7 @@
 {
   "scheduler": {
-    "rare_min_interval": 600,
-    "rare_retry_interval": 30,
+    "rare_min_interval": 300,
+    "rare_retry_interval": 20,
     "ambient_min_interval": 5
   },
   "events": [
@@ -37,7 +37,7 @@
       "scheduler": {
         "tier": 2
       },
-      "weight": 6,
+      "weight": 4,
       "cooldown": 20,
       "min_runtime": 45,
       "duration": 8,
@@ -91,7 +91,7 @@
       "scheduler": {
         "tier": 1
       },
-      "weight": 2,
+      "weight": 3,
       "cooldown": 1200,
       "min_runtime": 900,
       "color": [
@@ -139,7 +139,8 @@
       ],
       "conditions": {
         "time_of_day": [
-          "night"
+          "night",
+          "sunset"
         ]
       },
       "phases": [
@@ -172,7 +173,8 @@
           "night"
         ],
         "weather": [
-          "clear"
+          "clear",
+          "cloudy"
         ]
       },
       "duration": 30
