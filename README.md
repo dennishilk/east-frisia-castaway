@@ -90,6 +90,60 @@ Behavior details:
 - Runs at 20 FPS
 - Exits instantly on any key press, mouse movement, or mouse button press
 
+## XScreenSaver Integration
+
+The runtime now includes launch modes that map cleanly to XScreenSaver embedding behavior.
+
+### Fullscreen mode
+
+Default launch behavior remains fullscreen. You can run this explicitly as well:
+
+```bash
+python main.py --fullscreen
+```
+
+### Window ID mode
+
+To render into an externally managed X11 window (such as one created by XScreenSaver), pass its numeric window ID:
+
+```bash
+python main.py --window-id 123456
+```
+
+In this mode, the application renders into the provided window and does not request fullscreen or override the display resolution.
+
+### Root window mode
+
+To render directly into the X11 root window:
+
+```bash
+python main.py --root
+```
+
+This mode behaves like `--window-id` after resolving the root window ID automatically.
+
+### Preview mode
+
+For local preview without fullscreen:
+
+```bash
+python main.py --preview
+```
+
+Preview opens a `640x400` window (2× integer scale of the internal `320x200` render surface).
+
+### Debug mode
+
+Enable minimal structured console logging:
+
+```bash
+python main.py --debug
+```
+
+Without `--debug`, runtime output is suppressed.
+
+An installation helper script for end-to-end XScreenSaver deployment is planned for an upcoming phase.
+
 ## Project Structure
 
 ```text
