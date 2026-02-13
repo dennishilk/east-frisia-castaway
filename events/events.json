@@ -1,8 +1,7 @@
 {
   "scheduler": {
     "rare_min_interval": 300,
-    "rare_retry_interval": 20,
-    "rare_jitter_window": 10,
+    "tier2_fallback_delay": 180,
     "ambient_min_interval": 5
   },
   "events": [
