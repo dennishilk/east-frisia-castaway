@@ -55,6 +55,35 @@ class EventManager:
         self._phase_timestamps: list[tuple[EventPhase, float, float]] = []
         self._font: pygame.font.Font | None = None
         self._current_session_time = 0.0
+        self._event_state: dict[str, float] = {}
+        self._ferry_sprite = self._build_ferry_sprite()
+        self._aurora_band: pygame.Surface | None = None
+        self._aurora_band_width = 0
+
+    @staticmethod
+    def _build_ferry_sprite() -> pygame.Surface:
+        sprite = pygame.Surface((22, 7), pygame.SRCALPHA)
+        silhouette = (34, 40, 52, 255)
+        pygame.draw.rect(sprite, silhouette, pygame.Rect(0, 4, 22, 3))
+        pygame.draw.rect(sprite, silhouette, pygame.Rect(6, 2, 8, 2))
+        pygame.draw.rect(sprite, silhouette, pygame.Rect(8, 1, 2, 1))
+        return sprite
+
+    def _build_aurora_band(self, width: int) -> pygame.Surface:
+        band = pygame.Surface((width, 24), pygame.SRCALPHA)
+        for row in range(24):
+            center_falloff = abs(11.5 - row) / 11.5
+            alpha = int((1.0 - center_falloff) * 18)
+            if alpha <= 0:
+                continue
+            green = 110 + row // 4
+            pygame.draw.line(band, (92, green, 112, alpha), (0, row), (width - 1, row))
+
+        for x in range(0, width, 6):
+            band.set_at((x, 11), (118, 166, 126, 20))
+            if x + 2 < width:
+                band.set_at((x + 2, 13), (108, 156, 118, 14))
+        return band
 
     def _load_events(self, event_file: str) -> list[SceneEvent]:
         """Load and validate event definitions from JSON configuration."""
@@ -229,7 +258,25 @@ class EventManager:
         self._active_event_start_time = timer.session_time
         self._active_event_end_time = timer.session_time + self.active_event.duration
         self._build_phase_timestamps(self.active_event, timer.session_time)
+        self._event_state = self._build_event_state(self.active_event)
         timer.mark_event_triggered()
+
+    @staticmethod
+    def _build_event_state(event: SceneEvent) -> dict[str, float]:
+        if event.name == "shooting_star":
+            return {
+                "start_x_factor": random.uniform(0.1, 0.85),
+                "start_y": random.uniform(8.0, 50.0),
+                "delta_x": random.uniform(16.0, 30.0),
+                "delta_y": random.uniform(8.0, 16.0),
+            }
+        if event.name == "aurora_faint":
+            return {
+                "shimmer_phase": random.uniform(0.0, math.tau),
+                "base_y": random.uniform(18.0, 28.0),
+                "max_alpha": random.uniform(16.0, 26.0),
+            }
+        return {}
 
     def update(
         self,
@@ -249,6 +296,7 @@ class EventManager:
             self._active_event_start_time = 0.0
             self._active_event_end_time = 0.0
             self._phase_timestamps = []
+            self._event_state = {}
 
     def _ensure_font(self) -> pygame.font.Font | None:
         if not pygame.font.get_init():
@@ -291,6 +339,85 @@ class EventManager:
 
         surface.blit(buoy_layer, (x, y))
 
+    def _render_distant_ferry(self, surface: pygame.Surface) -> None:
+        if self.active_event is None:
+            return
+
+        now = max(self._active_event_start_time, min(self._active_event_end_time, self._current_session_time))
+        elapsed = now - self._active_event_start_time
+        progress = elapsed / self.active_event.duration if self.active_event.duration > 0 else 1.0
+
+        ferry_width = self._ferry_sprite.get_width()
+        travel = surface.get_width() + ferry_width + 16
+        x = int(-ferry_width + progress * travel)
+        y = surface.get_height() // 2 + 17
+
+        alpha = 80
+        phase = self.get_current_phase(now)
+        if phase is not None:
+            if phase.phase_type == "approach":
+                phase_elapsed = now - self._active_event_start_time
+                alpha = int(30 + 50 * min(1.0, phase_elapsed / max(phase.duration, 0.01)))
+            elif phase.phase_type == "fade":
+                remaining = max(0.0, self._active_event_end_time - now)
+                alpha = int(80 * min(1.0, remaining / max(phase.duration, 0.01)))
+
+        self._ferry_sprite.set_alpha(max(0, min(90, alpha)))
+        surface.blit(self._ferry_sprite, (x, y))
+
+    def _render_shooting_star(self, surface: pygame.Surface) -> None:
+        if self.active_event is None:
+            return
+
+        now = max(self._active_event_start_time, min(self._active_event_end_time, self._current_session_time))
+        progress = (now - self._active_event_start_time) / max(self.active_event.duration, 0.01)
+
+        start_x = int(self._event_state.get("start_x_factor", 0.5) * surface.get_width())
+        start_y = int(self._event_state.get("start_y", 20.0))
+        delta_x = self._event_state.get("delta_x", 24.0)
+        delta_y = self._event_state.get("delta_y", 12.0)
+
+        head_x = int(start_x + delta_x * progress)
+        head_y = int(start_y + delta_y * progress)
+        tail_x = int(head_x - 5)
+        tail_y = int(head_y - 2)
+
+        brightness = 255
+        phase = self.get_current_phase(now)
+        if phase is not None and phase.phase_type == "fade":
+            remaining = max(0.0, self._active_event_end_time - now)
+            brightness = int(255 * min(1.0, remaining / max(phase.duration, 0.01)))
+
+        color = (brightness, brightness, min(255, brightness + 4))
+        pygame.draw.line(surface, color, (tail_x, tail_y), (head_x, head_y), 1)
+        surface.set_at((head_x, head_y), color)
+
+    def _render_faint_aurora(self, surface: pygame.Surface) -> None:
+        if self.active_event is None:
+            return
+        width = surface.get_width()
+        if self._aurora_band is None or self._aurora_band_width != width:
+            self._aurora_band = self._build_aurora_band(width)
+            self._aurora_band_width = width
+
+        now = max(self._active_event_start_time, min(self._active_event_end_time, self._current_session_time))
+        phase_offset = self._event_state.get("shimmer_phase", 0.0)
+        shimmer = math.sin(now * 0.2 + phase_offset)
+        y = int(self._event_state.get("base_y", 24.0) + shimmer * 2.0)
+
+        alpha = int(self._event_state.get("max_alpha", 20.0))
+        phase = self.get_current_phase(now)
+        if phase is not None:
+            if phase.phase_type == "fade":
+                remaining = max(0.0, self._active_event_end_time - now)
+                alpha = int(alpha * min(1.0, remaining / max(phase.duration, 0.01)))
+            elif phase.phase_type == "approach":
+                elapsed = max(0.0, now - self._active_event_start_time)
+                alpha = int(alpha * min(1.0, elapsed / max(phase.duration, 0.01)))
+
+        self._aurora_band.set_alpha(max(0, min(32, alpha)))
+        surface.blit(self._aurora_band, (0, y))
+
     def render(self, surface: pygame.Surface) -> None:
         """Render active event visuals."""
         if self.active_event is None:
@@ -298,6 +425,18 @@ class EventManager:
 
         if self.active_event.name == "borkum_buoy":
             self._render_borkum_buoy(surface)
+            return
+
+        if self.active_event.name == "distant_ferry":
+            self._render_distant_ferry(surface)
+            return
+
+        if self.active_event.name == "shooting_star":
+            self._render_shooting_star(surface)
+            return
+
+        if self.active_event.name == "aurora_faint":
+            self._render_faint_aurora(surface)
             return
 
         pygame.draw.rect(surface, self.active_event.color, pygame.Rect(0, 6, surface.get_width(), 8))
