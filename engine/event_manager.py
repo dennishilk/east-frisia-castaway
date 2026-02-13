@@ -74,6 +74,10 @@ class EventManager:
         self._aurora_band: pygame.Surface | None = None
         self._aurora_band_width = 0
         self._trace_rare = trace_rare
+        self._tier1_evaluation_count = 0
+        self._tier1_condition_match_count_by_event: dict[str, int] = {
+            event.name: 0 for event in self._rare_tier1_events
+        }
 
     @staticmethod
     def _build_ferry_sprite() -> pygame.Surface:
@@ -261,14 +265,33 @@ class EventManager:
     def _matches_conditions(self, event: SceneEvent, environment: dict[str, str] | None) -> bool:
         if not event.conditions:
             return True
-        if environment is None:
-            return False
+
+        env = environment or {}
+        env_time_of_day = env.get("time_of_day", "")
+        env_weather = env.get("weather", "")
 
         for key, allowed in event.conditions.items():
-            current = environment.get(key)
+            if key == "time_of_day":
+                current = env_time_of_day
+            elif key == "weather":
+                current = env_weather
+            else:
+                current = env.get(key, "")
             if current not in allowed:
                 return False
         return True
+
+    def _record_tier1_condition_matches(self, environment: dict[str, str] | None) -> None:
+        self._tier1_evaluation_count += 1
+        for event in self._rare_tier1_events:
+            if self._matches_conditions(event, environment):
+                self._tier1_condition_match_count_by_event[event.name] += 1
+
+    def get_condition_match_counters(self) -> dict[str, Any]:
+        return {
+            "tier1_evaluated": self._tier1_evaluation_count,
+            "tier1_matched_by_event": dict(sorted(self._tier1_condition_match_count_by_event.items())),
+        }
 
     def _time_since_event(self, session_time: float, event_name: str) -> float:
         last_trigger = self._last_event_time_by_name.get(event_name)
@@ -427,6 +450,8 @@ class EventManager:
         if self._rare_slot_open:
             if self._rare_slot_open_time is None:
                 self._rare_slot_open_time = session_time
+
+            self._record_tier1_condition_matches(environment)
 
             rare_eligible_tier1 = self._eligible_pool(self._rare_tier1_events, session_time, environment)
             rare_eligible_tier2: list[SceneEvent] = []

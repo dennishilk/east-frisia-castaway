@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine.event_manager import EventManager, SceneEvent
 from engine.day_cycle import DayCycle
+from engine.scene import Scene
 from engine.timer import SessionTimer
 from engine.weather import WeatherSystem
 
@@ -102,6 +103,7 @@ class SimulationStats:
     time_of_day_counts: dict[str, int]
     overlap_counts: dict[str, int]
     rare_eligibility_summary: dict[str, dict[str, int]]
+    condition_match_counters: dict[str, object]
 
 
 
@@ -237,18 +239,21 @@ def run_simulation(
             weather.update(timer.session_time)
             current_time_of_day = day_cycle.get_time_of_day(timer.session_time)
             current_weather = weather.get_current_weather(timer.session_time)
-            environment = {"time_of_day": current_time_of_day, "weather": current_weather}
+            environment = Scene.build_environment(current_time_of_day, current_weather)
 
-            weather_counts[current_weather] = weather_counts.get(current_weather, 0) + 1
-            time_of_day_counts[current_time_of_day] = time_of_day_counts.get(current_time_of_day, 0) + 1
-            if current_weather == "clear" and current_time_of_day == "night":
+            env_time_of_day = environment["time_of_day"]
+            env_weather = environment["weather"]
+
+            weather_counts[env_weather] = weather_counts.get(env_weather, 0) + 1
+            time_of_day_counts[env_time_of_day] = time_of_day_counts.get(env_time_of_day, 0) + 1
+            if env_weather == "clear" and env_time_of_day == "night":
                 overlap_counts["night_clear"] += 1
-            if current_weather == "clear" and current_time_of_day == "day":
+            if env_weather == "clear" and env_time_of_day == "day":
                 overlap_counts["day_clear"] += 1
-            if current_weather == "clear" and current_time_of_day == "sunset":
+            if env_weather == "clear" and env_time_of_day == "sunset":
                 overlap_counts["sunset_clear"] += 1
 
-            if debug_eligibility and manager.active_event is None and manager._rare_slot_open(timer.session_time):
+            if debug_eligibility and manager.active_event is None and manager._rare_slot_open:
                 rare_events = [event for event in manager.events if event.event_type == "rare"]
                 print(f"[eligibility] t={timer.session_time:.3f} rare slot check")
                 print(f"[eligibility] rares={', '.join(event.name for event in rare_events)}")
@@ -262,11 +267,11 @@ def run_simulation(
                         reasons.append("cooldown")
 
                     weather_allowed = event.conditions.get("weather")
-                    if weather_allowed is not None and current_weather not in weather_allowed:
+                    if weather_allowed is not None and env_weather not in weather_allowed:
                         reasons.append("weather mismatch")
 
                     time_allowed = event.conditions.get("time_of_day")
-                    if time_allowed is not None and current_time_of_day not in time_allowed:
+                    if time_allowed is not None and env_time_of_day not in time_allowed:
                         reasons.append("time_of_day mismatch")
 
                     if not event.conditions:
@@ -284,7 +289,7 @@ def run_simulation(
                         print(f"  - {event.name}: Eligible=False ({reason_text})")
 
             event_before = manager.active_event
-            manager.update(delta_time, timer, environment if trace_rare else None)
+            manager.update(delta_time, timer, environment)
             active_count = 1 if manager.active_event is not None else 0
             max_simultaneous_events = max(max_simultaneous_events, active_count)
 
@@ -409,6 +414,7 @@ def run_simulation(
         time_of_day_counts=dict(sorted(time_of_day_counts.items())),
         overlap_counts=overlap_counts,
         rare_eligibility_summary=rare_eligibility_summary,
+        condition_match_counters=manager.get_condition_match_counters(),
     )
 
 
@@ -499,6 +505,13 @@ def print_report(
     print(f"  night+clear: {_format_percentage(stats.overlap_counts['night_clear'], stats.total_frames)}")
     print(f"  day+clear: {_format_percentage(stats.overlap_counts['day_clear'], stats.total_frames)}")
     print(f"  sunset+clear: {_format_percentage(stats.overlap_counts['sunset_clear'], stats.total_frames)}")
+
+    print("\n=== Condition Match Counters ===")
+    print(f"  Tier1 evaluated: {stats.condition_match_counters.get('tier1_evaluated', 0)}")
+    tier1_matches = stats.condition_match_counters.get("tier1_matched_by_event", {})
+    if isinstance(tier1_matches, dict) and tier1_matches:
+        for event_name, count in tier1_matches.items():
+            print(f"  {event_name}: {count}")
 
     if debug_eligibility:
         print("\n=== Rare Eligibility Summary ===")

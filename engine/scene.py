@@ -192,6 +192,20 @@ class Scene:
         self._time_of_day = "day"
         self._weather_name = "clear"
 
+    @staticmethod
+    def build_environment(time_of_day: str, weather: str) -> dict[str, str]:
+        """Build normalized environment payload for event conditions."""
+        valid_times = {"day", "sunset", "night", "dawn"}
+        valid_weather = {"clear", "cloudy"}
+        return {
+            "time_of_day": time_of_day if time_of_day in valid_times else "day",
+            "weather": weather if weather in valid_weather else "clear",
+        }
+
+    def get_environment(self) -> dict[str, str]:
+        """Return the current environment values used by event scheduling."""
+        return self.build_environment(self._time_of_day, self._weather_name)
+
     def _build_sand_surface(self) -> pygame.Surface:
         """Create static two-tone sand with lightweight dithering."""
         sand = pygame.Surface((self._sand_rect.width, self._sand_rect.height))
@@ -218,11 +232,7 @@ class Scene:
         self._weather_name = self.weather.get_current_weather(timer.session_time)
 
         self.idle_character.update(timer.session_time, self._weather_name)
-        self.event_manager.update(
-            delta_time,
-            timer,
-            environment={"time_of_day": self._time_of_day, "weather": self._weather_name},
-        )
+        self.event_manager.update(delta_time, timer, environment=self.get_environment())
 
     def _render_weather_overlay(self, surface: pygame.Surface) -> None:
         tint = self.weather.get_overlay_tint(self._session_time)
