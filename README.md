@@ -81,6 +81,18 @@ Uninstall wrapper and remove registration:
 
 `xscreensaver-demo` / `xscreensaver-settings` manages `~/.xscreensaver` and should be used to review active programs.
 
+
+## Ecological Event Scheduling
+
+Event scheduling uses two independent internal pools:
+
+- **Ambient pool** for frequent low-impact motion.
+- **Rare pool** for scenic highlights that should still appear during long sessions.
+
+Both pools evaluate event conditions (`weather`, `time_of_day`), per-event cooldown, and `min_runtime` against absolute session time. Rare events also use a global minimum spacing (`rare_min_interval`) so they remain uncommon without being starved by ambient traffic. Ambient events can keep flowing via their own spacing control (`ambient_min_interval`) when no rare slot is currently open.
+
+The scheduler keeps visual behavior unchanged while improving long-run ecology in burn-in simulations.
+
 ## Project Structure
 
 ```text

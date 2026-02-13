@@ -48,7 +48,11 @@ class EventManager:
     """
 
     def __init__(self, event_file: str) -> None:
+        self.rare_min_interval = 600.0
+        self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
+        self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
+        self._rare_events = tuple(event for event in self.events if event.event_type == "rare")
         self.active_event: SceneEvent | None = None
         self._active_event_start_time = 0.0
         self._active_event_end_time = 0.0
@@ -56,6 +60,9 @@ class EventManager:
         self._font: pygame.font.Font | None = None
         self._current_session_time = 0.0
         self._event_state: dict[str, float] = {}
+        self._last_event_time_by_name: dict[str, float] = {}
+        self._last_rare_event_time = float("-inf")
+        self._last_ambient_event_time = float("-inf")
         self._ferry_sprite = self._build_ferry_sprite()
         self._aurora_band: pygame.Surface | None = None
         self._aurora_band_width = 0
@@ -88,6 +95,7 @@ class EventManager:
     def _load_events(self, event_file: str) -> list[SceneEvent]:
         """Load and validate event definitions from JSON configuration."""
         raw_data = json.loads(Path(event_file).read_text(encoding="utf-8"))
+        self._load_scheduler_config(raw_data)
         raw_events = raw_data.get("events", [])
         if not isinstance(raw_events, list):
             LOGGER.warning("Ignoring malformed event list in %s", event_file)
@@ -100,6 +108,19 @@ class EventManager:
                 loaded_events.append(event)
 
         return loaded_events
+
+    def _load_scheduler_config(self, raw_data: dict[str, Any]) -> None:
+        scheduler = raw_data.get("scheduler", {})
+        if not isinstance(scheduler, dict):
+            return
+
+        rare_min_interval = scheduler.get("rare_min_interval")
+        ambient_min_interval = scheduler.get("ambient_min_interval")
+
+        if isinstance(rare_min_interval, (int, float)) and rare_min_interval >= 0.0:
+            self.rare_min_interval = float(rare_min_interval)
+        if isinstance(ambient_min_interval, (int, float)) and ambient_min_interval >= 0.0:
+            self.ambient_min_interval = float(ambient_min_interval)
 
     def _parse_phases(self, entry: dict[str, Any], index: int) -> tuple[tuple[EventPhase, ...], float] | None:
         phases_raw = entry.get("phases")
@@ -215,15 +236,37 @@ class EventManager:
                 return False
         return True
 
-    def _eligible_events(self, timer: SessionTimer, environment: dict[str, str] | None) -> list[SceneEvent]:
-        """Return events that satisfy runtime, cooldown, and conditions."""
-        return [
-            event
-            for event in self.events
-            if timer.has_reached_runtime(event.min_runtime)
-            and timer.time_since_last_event >= event.cooldown
+    def _time_since_event(self, session_time: float, event_name: str) -> float:
+        last_trigger = self._last_event_time_by_name.get(event_name)
+        if last_trigger is None:
+            return float("inf")
+        return max(0.0, session_time - last_trigger)
+
+    def _is_event_eligible(
+        self,
+        event: SceneEvent,
+        session_time: float,
+        environment: dict[str, str] | None,
+    ) -> bool:
+        return (
+            session_time >= event.min_runtime
+            and self._time_since_event(session_time, event.name) >= event.cooldown
             and self._matches_conditions(event, environment)
-        ]
+        )
+
+    def _eligible_pool(
+        self,
+        events: tuple[SceneEvent, ...],
+        session_time: float,
+        environment: dict[str, str] | None,
+    ) -> list[SceneEvent]:
+        return [event for event in events if self._is_event_eligible(event, session_time, environment)]
+
+    def _rare_slot_open(self, session_time: float) -> bool:
+        return (session_time - self._last_rare_event_time) >= self.rare_min_interval
+
+    def _ambient_slot_open(self, session_time: float) -> bool:
+        return (session_time - self._last_ambient_event_time) >= self.ambient_min_interval
 
     def _build_phase_timestamps(self, event: SceneEvent, start_time: float) -> None:
         self._phase_timestamps = []
@@ -249,16 +292,36 @@ class EventManager:
         if self.active_event is not None:
             return
 
-        eligible = self._eligible_events(timer, environment)
-        if not eligible:
+        session_time = timer.session_time
+        selected_event: SceneEvent | None = None
+
+        if self._rare_slot_open(session_time):
+            rare_eligible = self._eligible_pool(self._rare_events, session_time, environment)
+            if rare_eligible:
+                selected_event = random.choices(rare_eligible, weights=[event.weight for event in rare_eligible], k=1)[0]
+
+        if selected_event is None and self._ambient_slot_open(session_time):
+            ambient_eligible = self._eligible_pool(self._ambient_events, session_time, environment)
+            if ambient_eligible:
+                selected_event = random.choices(
+                    ambient_eligible,
+                    weights=[event.weight for event in ambient_eligible],
+                    k=1,
+                )[0]
+
+        if selected_event is None:
             return
 
-        weights = [event.weight for event in eligible]
-        self.active_event = random.choices(eligible, weights=weights, k=1)[0]
-        self._active_event_start_time = timer.session_time
-        self._active_event_end_time = timer.session_time + self.active_event.duration
-        self._build_phase_timestamps(self.active_event, timer.session_time)
+        self.active_event = selected_event
+        self._active_event_start_time = session_time
+        self._active_event_end_time = session_time + self.active_event.duration
+        self._build_phase_timestamps(self.active_event, session_time)
         self._event_state = self._build_event_state(self.active_event)
+        self._last_event_time_by_name[self.active_event.name] = session_time
+        if self.active_event.event_type == "rare":
+            self._last_rare_event_time = session_time
+        else:
+            self._last_ambient_event_time = session_time
         timer.mark_event_triggered()
 
     @staticmethod

@@ -1,4 +1,8 @@
 {
+  "scheduler": {
+    "rare_min_interval": 600,
+    "ambient_min_interval": 5
+  },
   "events": [
     {
       "id": "soft_gull_pass",

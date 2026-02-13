@@ -10,9 +10,9 @@ from __future__ import annotations
 import argparse
 import math
 import os
-import sys
 import random
 import statistics
+import sys
 import time
 import tracemalloc
 from collections import defaultdict
@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
-from unittest.mock import patch
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -34,6 +33,7 @@ from engine.timer import SessionTimer
 FPS = 20
 FIXED_DT = 1.0 / FPS
 DEFAULT_HOURS = 8.0
+DEFAULT_MEMORY_SNAPSHOT_INTERVAL = 10_000
 EVENT_FILE = REPO_ROOT / "events" / "events.json"
 
 
@@ -54,8 +54,23 @@ class FakePerfClock:
 def patched_perf_counter(fake_clock: FakePerfClock) -> Iterator[None]:
     """Patch ``time.perf_counter`` so SessionTimer can run in virtual time."""
 
-    with patch("engine.timer.time.perf_counter", side_effect=fake_clock.perf_counter):
+    original_perf_counter = time.perf_counter
+    import engine.timer as timer_module
+
+    timer_module.time.perf_counter = fake_clock.perf_counter
+    try:
         yield
+    finally:
+        timer_module.time.perf_counter = original_perf_counter
+
+
+@dataclass(frozen=True)
+class AllocationDiff:
+    """Top memory growth item from tracemalloc snapshot comparison."""
+
+    location: str
+    size_diff_bytes: int
+    count_diff: int
 
 
 @dataclass
@@ -71,40 +86,73 @@ class SimulationStats:
     max_simultaneous_events: int
     cooldown_violations: int
     min_runtime_violations: int
+    rare_interval_violations: int
+    ambient_interval_violations: int
     timing_drift_seconds: float
     accumulation_drift_seconds: float
     avg_iteration_seconds: float
-    memory_start_bytes: int
+    memory_baseline_bytes: int
     memory_end_bytes: int
     memory_peak_bytes: int
+    top_allocation_increases: list[AllocationDiff]
     rare_ratio_warning: str | None
 
 
-@dataclass
-class TriggerRecord:
-    """Event trigger details for validation and reporting."""
-
-    frame: int
-    session_time: float
-    event: SceneEvent
 
 
 def identify_rare_events(events: list[SceneEvent]) -> set[str]:
-    """Heuristic: treat low-weight events as rare."""
+    """Use explicit event type to identify rare events."""
 
-    if not events:
-        return set()
-
-    max_weight = max(event.weight for event in events)
-    threshold = max(1, int(max_weight * 0.25))
-    return {event.name for event in events if event.weight <= threshold}
+    return {event.name for event in events if event.event_type == "rare"}
 
 
 def _format_seconds(seconds: float) -> str:
     return f"{seconds:.6f}s"
 
 
-def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationStats:
+def _format_trace_location(trace: tracemalloc.StatisticDiff) -> str:
+    frame = trace.traceback[0]
+    path = Path(frame.filename)
+    try:
+        display_path = path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        display_path = path
+    return f"{display_path}:{frame.lineno}"
+
+
+def _filtered_snapshot() -> tracemalloc.Snapshot:
+    return tracemalloc.take_snapshot().filter_traces(
+        (
+            tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+            tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+            tracemalloc.Filter(False, "*/tracemalloc.py"),
+        )
+    )
+
+
+def _top_growth(
+    baseline_snapshot: tracemalloc.Snapshot,
+    current_snapshot: tracemalloc.Snapshot,
+    limit: int = 5,
+) -> list[AllocationDiff]:
+    diffs = current_snapshot.compare_to(baseline_snapshot, "lineno")
+    growth = [diff for diff in diffs if diff.size_diff > 0]
+    return [
+        AllocationDiff(
+            location=_format_trace_location(diff),
+            size_diff_bytes=diff.size_diff,
+            count_diff=diff.count_diff,
+        )
+        for diff in growth[:limit]
+    ]
+
+
+def run_simulation(
+    hours: float,
+    seed: int | None,
+    debug: bool,
+    memory_snapshot_interval: int,
+) -> SimulationStats:
     """Execute deterministic burn-in loop and return captured metrics."""
 
     if seed is not None:
@@ -115,28 +163,36 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
 
     fake_clock = FakePerfClock()
     event_counts: dict[str, int] = defaultdict(int)
-    trigger_records: list[TriggerRecord] = []
+    trigger_count = 0
     event_intervals_by_id: dict[str, list[float]] = defaultdict(list)
 
     cooldown_violations = 0
     min_runtime_violations = 0
+    rare_interval_violations = 0
+    ambient_interval_violations = 0
     max_simultaneous_events = 0
 
-    iteration_durations: list[float] = []
+    iteration_total_seconds = 0.0
     delta_accumulator = 0.0
 
     tracemalloc.start()
-    memory_start = tracemalloc.get_traced_memory()[0]
+    memory_baseline_bytes = 0
+    baseline_snapshot: tracemalloc.Snapshot | None = None
+    latest_top_growth: list[AllocationDiff] = []
 
     with patched_perf_counter(fake_clock):
         timer = SessionTimer()
         manager = EventManager(str(EVENT_FILE))
+        memory_baseline_bytes = tracemalloc.get_traced_memory()[0]
+        baseline_snapshot = _filtered_snapshot()
 
         if debug:
             print(f"Loaded events: {[event.name for event in manager.events]}")
 
         last_trigger_by_event: dict[str, float] = {}
         previous_event_trigger_time: float | None = None
+        previous_rare_time: float | None = None
+        previous_ambient_time: float | None = None
 
         for frame in range(total_frames):
             loop_start = time.process_time_ns()
@@ -153,8 +209,7 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
             event_after = manager.active_event
             if event_before is None and event_after is not None:
                 event_counts[event_after.name] += 1
-                trigger = TriggerRecord(frame=frame, session_time=timer.session_time, event=event_after)
-                trigger_records.append(trigger)
+                trigger_count += 1
 
                 if timer.session_time < event_after.min_runtime:
                     min_runtime_violations += 1
@@ -167,6 +222,19 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
                         cooldown_violations += 1
                 last_trigger_by_event[event_after.name] = timer.session_time
 
+                if event_after.event_type == "rare":
+                    if previous_rare_time is not None:
+                        rare_interval = timer.session_time - previous_rare_time
+                        if rare_interval + 1e-9 < manager.rare_min_interval:
+                            rare_interval_violations += 1
+                    previous_rare_time = timer.session_time
+                else:
+                    if previous_ambient_time is not None:
+                        ambient_interval = timer.session_time - previous_ambient_time
+                        if ambient_interval + 1e-9 < manager.ambient_min_interval:
+                            ambient_interval_violations += 1
+                    previous_ambient_time = timer.session_time
+
                 if previous_event_trigger_time is not None:
                     interval = timer.session_time - previous_event_trigger_time
                     event_intervals_by_id["__all__"].append(interval)
@@ -178,11 +246,28 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
                         f"triggered={event_after.name} duration={event_after.duration}"
                     )
 
+            if memory_snapshot_interval > 0 and (frame + 1) % memory_snapshot_interval == 0:
+                latest_top_growth = (
+                    _top_growth(baseline_snapshot, _filtered_snapshot())
+                    if baseline_snapshot is not None
+                    else []
+                )
+                if debug:
+                    print(f"frame={frame + 1} top allocation changes:")
+                    for change in latest_top_growth:
+                        print(
+                            f"  {change.location} +{change.size_diff_bytes} bytes "
+                            f"({change.count_diff:+d} allocations)"
+                        )
+
             loop_end = time.process_time_ns()
-            iteration_durations.append((loop_end - loop_start) / 1_000_000_000)
+            iteration_total_seconds += (loop_end - loop_start) / 1_000_000_000
 
     memory_end, memory_peak = tracemalloc.get_traced_memory()
+    end_snapshot = _filtered_snapshot()
     tracemalloc.stop()
+
+    latest_top_growth = _top_growth(baseline_snapshot, end_snapshot) if baseline_snapshot is not None else []
 
     expected_session_time = total_frames / FPS
     timing_drift_seconds = timer.session_time - expected_session_time
@@ -201,14 +286,14 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
     }
 
     rare_events = identify_rare_events(manager.events)
-    rare_event_total = sum(event_counts[name] for name in rare_events)
+    rare_event_total = sum(event_counts.get(name, 0) for name in rare_events)
 
     rare_ratio_warning = None
-    if manager.events and rare_events and len(trigger_records) > 0:
+    if manager.events and rare_events and trigger_count > 0:
         total_weight = sum(event.weight for event in manager.events)
         rare_weight = sum(event.weight for event in manager.events if event.name in rare_events)
         expected_rare_ratio = rare_weight / total_weight if total_weight else 0.0
-        observed_rare_ratio = rare_event_total / len(trigger_records)
+        observed_rare_ratio = rare_event_total / trigger_count
         if expected_rare_ratio > 0.0 and (
             observed_rare_ratio > expected_rare_ratio * 3.0
             or observed_rare_ratio < expected_rare_ratio / 3.0
@@ -220,7 +305,7 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
 
     return SimulationStats(
         total_frames=total_frames,
-        total_events=len(trigger_records),
+        total_events=trigger_count,
         event_counts=dict(sorted(event_counts.items())),
         average_interval=average_interval,
         event_intervals_by_id=event_interval_averages,
@@ -228,12 +313,15 @@ def run_simulation(hours: float, seed: int | None, debug: bool) -> SimulationSta
         max_simultaneous_events=max_simultaneous_events,
         cooldown_violations=cooldown_violations,
         min_runtime_violations=min_runtime_violations,
+        rare_interval_violations=rare_interval_violations,
+        ambient_interval_violations=ambient_interval_violations,
         timing_drift_seconds=timing_drift_seconds,
         accumulation_drift_seconds=accumulation_drift_seconds,
-        avg_iteration_seconds=statistics.fmean(iteration_durations) if iteration_durations else 0.0,
-        memory_start_bytes=memory_start,
+        avg_iteration_seconds=(iteration_total_seconds / total_frames) if total_frames > 0 else 0.0,
+        memory_baseline_bytes=memory_baseline_bytes,
         memory_end_bytes=memory_end,
         memory_peak_bytes=memory_peak,
+        top_allocation_increases=latest_top_growth,
         rare_ratio_warning=rare_ratio_warning,
     )
 
@@ -264,9 +352,21 @@ def print_report(hours: float, stats: SimulationStats) -> None:
     print(f"Average interval between events: {avg_interval_text}")
     print(f"Max simultaneous events: {stats.max_simultaneous_events}")
 
-    memory_delta = stats.memory_end_bytes - stats.memory_start_bytes
-    print(f"Memory delta: {memory_delta} bytes")
+    memory_delta = stats.memory_end_bytes - stats.memory_baseline_bytes
+    print(f"Memory heap baseline: {stats.memory_baseline_bytes} bytes")
+    print(f"Memory heap end: {stats.memory_end_bytes} bytes")
+    print(f"Memory heap delta: {memory_delta} bytes")
     print(f"Memory peak: {stats.memory_peak_bytes} bytes")
+
+    print("Top 5 allocation increases since baseline:")
+    if not stats.top_allocation_increases:
+        print("  (none)")
+    else:
+        for change in stats.top_allocation_increases:
+            print(
+                f"  {change.location} +{change.size_diff_bytes} bytes "
+                f"({change.count_diff:+d} allocations)"
+            )
 
     print(f"Timing drift (session_time - expected): {stats.timing_drift_seconds:.12f}s")
     print(f"Timing drift (sum(delta) - expected): {stats.accumulation_drift_seconds:.12f}s")
@@ -274,6 +374,8 @@ def print_report(hours: float, stats: SimulationStats) -> None:
     print("\nValidation checks:")
     print(f"  Min runtime violations: {stats.min_runtime_violations}")
     print(f"  Cooldown violations: {stats.cooldown_violations}")
+    print(f"  Rare interval violations: {stats.rare_interval_violations}")
+    print(f"  Ambient interval violations: {stats.ambient_interval_violations}")
     print(f"  One-active-event invariant violations: {max(0, stats.max_simultaneous_events - 1)}")
     print(f"  Avg loop iteration wall time: {stats.avg_iteration_seconds * 1_000_000:.2f} µs")
 
@@ -291,13 +393,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Headless burn-in simulation for event timing.")
     parser.add_argument("--seed", type=int, default=None, help="Fixed RNG seed for deterministic runs")
     parser.add_argument("--hours", type=float, default=DEFAULT_HOURS, help="Simulated hours to run")
-    parser.add_argument("--debug", action="store_true", help="Print per-trigger debug output")
+    parser.add_argument("--debug", action="store_true", help="Print per-trigger and memory debug output")
+    parser.add_argument(
+        "--memory-snapshot-interval",
+        type=int,
+        default=DEFAULT_MEMORY_SNAPSHOT_INTERVAL,
+        help="Frames between memory snapshot comparisons (0 disables interval comparisons)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    stats = run_simulation(hours=args.hours, seed=args.seed, debug=args.debug)
+    stats = run_simulation(
+        hours=args.hours,
+        seed=args.seed,
+        debug=args.debug,
+        memory_snapshot_interval=args.memory_snapshot_interval,
+    )
     print_report(hours=args.hours, stats=stats)
 
 
