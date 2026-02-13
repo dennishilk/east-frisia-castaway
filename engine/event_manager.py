@@ -53,6 +53,7 @@ class EventManager:
         self.rare_min_interval = 300.0
         self.rare_retry_interval = 20.0
         self.rare_jitter_window = 10.0
+        self.tier1_grace_period = 180.0
         self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
@@ -68,6 +69,7 @@ class EventManager:
         self._event_state: dict[str, float] = {}
         self._last_event_time_by_name: dict[str, float] = {}
         self._next_rare_check_time = 0.0
+        self._rare_slot_open_time: float | None = None
         self._last_ambient_event_time = float("-inf")
         self._ferry_sprite = self._build_ferry_sprite()
         self._aurora_band: pygame.Surface | None = None
@@ -124,6 +126,7 @@ class EventManager:
         rare_min_interval = scheduler.get("rare_min_interval")
         rare_retry_interval = scheduler.get("rare_retry_interval")
         rare_jitter_window = scheduler.get("rare_jitter_window")
+        tier1_grace_period = scheduler.get("tier1_grace_period")
         ambient_min_interval = scheduler.get("ambient_min_interval")
 
         if isinstance(rare_min_interval, (int, float)) and rare_min_interval >= 0.0:
@@ -132,14 +135,16 @@ class EventManager:
             self.rare_retry_interval = float(rare_retry_interval)
         if isinstance(rare_jitter_window, (int, float)) and rare_jitter_window >= 0.0:
             self.rare_jitter_window = float(rare_jitter_window)
+        if isinstance(tier1_grace_period, (int, float)) and tier1_grace_period >= 0.0:
+            self.tier1_grace_period = float(tier1_grace_period)
         if isinstance(ambient_min_interval, (int, float)) and ambient_min_interval >= 0.0:
             self.ambient_min_interval = float(ambient_min_interval)
 
     def _schedule_next_rare_after_trigger(self, session_time: float) -> None:
         """Set next rare check with deterministic micro-jitter to break phase lock."""
-        jitter = random.uniform(-self.rare_jitter_window, self.rare_jitter_window)
+        jitter = random.uniform(0.0, self.rare_jitter_window)
         next_check_time = session_time + self.rare_min_interval + jitter
-        self._next_rare_check_time = max(session_time + 1e-6, next_check_time)
+        self._next_rare_check_time = max(self._next_rare_check_time, next_check_time)
 
     def _parse_phases(self, entry: dict[str, Any], index: int) -> tuple[tuple[EventPhase, ...], float] | None:
         phases_raw = entry.get("phases")
@@ -434,9 +439,14 @@ class EventManager:
         rare_evaluated = False
         if self._rare_slot_open(session_time):
             rare_evaluated = True
+            if self._rare_slot_open_time is None:
+                self._rare_slot_open_time = session_time
+
             rare_eligible_tier1 = self._eligible_pool(self._rare_tier1_events, session_time, environment)
+            rare_eligible_tier2: list[SceneEvent] = []
             selected_tier: int | None = None
             rng_state_used: dict[str, Any] | None = None
+
             if rare_eligible_tier1:
                 selected_tier = 1
                 rng_state_used = self._rng_state_signature()
@@ -446,38 +456,36 @@ class EventManager:
                     k=1,
                 )[0]
             else:
-                rare_eligible_tier2 = self._eligible_pool(self._rare_tier2_events, session_time, environment)
-                if rare_eligible_tier2:
-                    selected_tier = 2
-                    rng_state_used = self._rng_state_signature()
-                    selected_event = random.choices(
-                        rare_eligible_tier2,
-                        weights=[event.weight for event in rare_eligible_tier2],
-                        k=1,
-                    )[0]
-                self._trace_rare_selection(
-                    session_time,
-                    environment,
-                    rare_eligible_tier1,
-                    rare_eligible_tier2,
-                    selected_event,
-                    selected_tier,
-                    rng_state_used,
+                slot_open_time = self._rare_slot_open_time
+                grace_expired = (
+                    slot_open_time is not None
+                    and (session_time - slot_open_time) >= self.tier1_grace_period
                 )
+                if grace_expired:
+                    rare_eligible_tier2 = self._eligible_pool(self._rare_tier2_events, session_time, environment)
+                    if rare_eligible_tier2:
+                        selected_tier = 2
+                        rng_state_used = self._rng_state_signature()
+                        selected_event = random.choices(
+                            rare_eligible_tier2,
+                            weights=[event.weight for event in rare_eligible_tier2],
+                            k=1,
+                        )[0]
 
-            if rare_eligible_tier1:
-                self._trace_rare_selection(
-                    session_time,
-                    environment,
-                    rare_eligible_tier1,
-                    [],
-                    selected_event,
-                    selected_tier,
-                    rng_state_used,
-                )
+            self._trace_rare_selection(
+                session_time,
+                environment,
+                rare_eligible_tier1,
+                rare_eligible_tier2,
+                selected_event,
+                selected_tier,
+                rng_state_used,
+            )
 
             if selected_event is None:
                 self._next_rare_check_time = session_time + self.rare_retry_interval
+            else:
+                self._rare_slot_open_time = None
 
         if selected_event is None and self._ambient_slot_open(session_time):
             ambient_eligible = self._eligible_pool(self._ambient_events, session_time, environment)
