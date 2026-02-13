@@ -50,6 +50,7 @@ class EventManager:
 
     def __init__(self, event_file: str) -> None:
         self.rare_min_interval = 600.0
+        self.rare_retry_interval = 30.0
         self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
@@ -64,7 +65,7 @@ class EventManager:
         self._current_session_time = 0.0
         self._event_state: dict[str, float] = {}
         self._last_event_time_by_name: dict[str, float] = {}
-        self._last_rare_event_time = float("-inf")
+        self._next_rare_check_time = 0.0
         self._last_ambient_event_time = float("-inf")
         self._ferry_sprite = self._build_ferry_sprite()
         self._aurora_band: pygame.Surface | None = None
@@ -118,10 +119,13 @@ class EventManager:
             return
 
         rare_min_interval = scheduler.get("rare_min_interval")
+        rare_retry_interval = scheduler.get("rare_retry_interval")
         ambient_min_interval = scheduler.get("ambient_min_interval")
 
         if isinstance(rare_min_interval, (int, float)) and rare_min_interval >= 0.0:
             self.rare_min_interval = float(rare_min_interval)
+        if isinstance(rare_retry_interval, (int, float)) and rare_retry_interval >= 0.0:
+            self.rare_retry_interval = float(rare_retry_interval)
         if isinstance(ambient_min_interval, (int, float)) and ambient_min_interval >= 0.0:
             self.ambient_min_interval = float(ambient_min_interval)
 
@@ -289,7 +293,7 @@ class EventManager:
         return [event for event in events if self._is_event_eligible(event, session_time, environment)]
 
     def _rare_slot_open(self, session_time: float) -> bool:
-        return (session_time - self._last_rare_event_time) >= self.rare_min_interval
+        return session_time >= self._next_rare_check_time
 
     def _ambient_slot_open(self, session_time: float) -> bool:
         return (session_time - self._last_ambient_event_time) >= self.ambient_min_interval
@@ -321,7 +325,9 @@ class EventManager:
         session_time = timer.session_time
         selected_event: SceneEvent | None = None
 
+        rare_evaluated = False
         if self._rare_slot_open(session_time):
+            rare_evaluated = True
             rare_eligible_tier1 = self._eligible_pool(self._rare_tier1_events, session_time, environment)
             if rare_eligible_tier1:
                 selected_event = random.choices(
@@ -337,6 +343,9 @@ class EventManager:
                         weights=[event.weight for event in rare_eligible_tier2],
                         k=1,
                     )[0]
+
+            if selected_event is None:
+                self._next_rare_check_time = session_time + self.rare_retry_interval
 
         if selected_event is None and self._ambient_slot_open(session_time):
             ambient_eligible = self._eligible_pool(self._ambient_events, session_time, environment)
@@ -357,9 +366,12 @@ class EventManager:
         self._event_state = self._build_event_state(self.active_event)
         self._last_event_time_by_name[self.active_event.name] = session_time
         if self.active_event.event_type == "rare":
-            self._last_rare_event_time = session_time
+            self._next_rare_check_time = session_time + self.rare_min_interval
         else:
             self._last_ambient_event_time = session_time
+
+        if rare_evaluated and self.active_event.event_type != "rare":
+            self._next_rare_check_time = session_time + self.rare_retry_interval
         timer.mark_event_triggered()
 
     @staticmethod
