@@ -1,6 +1,7 @@
 {
   "scheduler": {
     "rare_min_interval": 600,
+    "rare_retry_interval": 30,
     "ambient_min_interval": 5
   },
   "events": [
