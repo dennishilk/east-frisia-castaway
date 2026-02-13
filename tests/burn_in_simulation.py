@@ -98,9 +98,11 @@ class SimulationStats:
     memory_peak_bytes: int
     top_allocation_increases: list[AllocationDiff]
     rare_ratio_warning: str | None
-    weather_frame_counts: dict[str, int]
-    time_of_day_frame_counts: dict[str, int]
-    overlap_frame_counts: dict[str, int]
+    weather_counts: dict[str, int]
+    time_of_day_counts: dict[str, int]
+    night_clear_frames: int
+    day_clear_frames: int
+    sunset_clear_frames: int
     rare_eligibility_summary: dict[str, dict[str, int]]
 
 
@@ -183,9 +185,11 @@ def run_simulation(
 
     iteration_total_seconds = 0.0
     delta_accumulator = 0.0
-    weather_frame_counts: dict[str, int] = defaultdict(int)
-    time_of_day_frame_counts: dict[str, int] = defaultdict(int)
-    overlap_frame_counts: dict[str, int] = defaultdict(int)
+    weather_counts: dict[str, int] = defaultdict(int)
+    time_of_day_counts: dict[str, int] = defaultdict(int)
+    night_clear_frames = 0
+    day_clear_frames = 0
+    sunset_clear_frames = 0
     rare_eligibility_summary: dict[str, dict[str, int]] = {}
 
     tracemalloc.start()
@@ -236,19 +240,15 @@ def run_simulation(
             environment = {"time_of_day": current_time_of_day, "weather": current_weather}
 
             if profile_climate:
-                weather_frame_counts[current_weather] += 1
-                time_of_day_frame_counts[current_time_of_day] += 1
-                overlap_frame_counts["night+clear"] += int(
-                    current_time_of_day == "night" and current_weather == "clear"
-                )
-                overlap_frame_counts["day+clear"] += int(
-                    current_time_of_day == "day" and current_weather == "clear"
-                )
-                overlap_frame_counts["sunset+clear"] += int(
-                    current_time_of_day == "sunset" and current_weather == "clear"
-                )
-                overlap_frame_counts["night_any_weather"] += int(current_time_of_day == "night")
-                overlap_frame_counts["clear_any_time"] += int(current_weather == "clear")
+                weather_counts[current_weather] += 1
+                time_of_day_counts[current_time_of_day] += 1
+                if current_weather == "clear":
+                    if current_time_of_day == "night":
+                        night_clear_frames += 1
+                    if current_time_of_day == "day":
+                        day_clear_frames += 1
+                    if current_time_of_day == "sunset":
+                        sunset_clear_frames += 1
 
             if debug_eligibility and manager.active_event is None and manager._rare_slot_open(timer.session_time):
                 rare_events = [event for event in manager.events if event.event_type == "rare"]
@@ -407,9 +407,11 @@ def run_simulation(
         memory_peak_bytes=memory_peak,
         top_allocation_increases=latest_top_growth,
         rare_ratio_warning=rare_ratio_warning,
-        weather_frame_counts=dict(sorted(weather_frame_counts.items())),
-        time_of_day_frame_counts=dict(sorted(time_of_day_frame_counts.items())),
-        overlap_frame_counts=dict(sorted(overlap_frame_counts.items())),
+        weather_counts=dict(sorted(weather_counts.items())),
+        time_of_day_counts=dict(sorted(time_of_day_counts.items())),
+        night_clear_frames=night_clear_frames,
+        day_clear_frames=day_clear_frames,
+        sunset_clear_frames=sunset_clear_frames,
         rare_eligibility_summary=rare_eligibility_summary,
     )
 
@@ -487,19 +489,19 @@ def print_report(
 
     if profile_climate:
         print("\n=== Climate Distribution ===")
-        print("\nWeather frame distribution (percentage):")
-        for weather_name, count in stats.weather_frame_counts.items():
+        print("\nWeather distribution (% of frames):")
+        for weather_name, count in stats.weather_counts.items():
             print(f"  {weather_name}: {_format_percentage(count, stats.total_frames)}")
 
-        print("\nTime-of-day frame distribution (percentage):")
+        print("\nTime-of-day distribution (% of frames):")
         for time_of_day in ("day", "sunset", "night", "dawn"):
-            count = stats.time_of_day_frame_counts.get(time_of_day, 0)
+            count = stats.time_of_day_counts.get(time_of_day, 0)
             print(f"  {time_of_day}: {_format_percentage(count, stats.total_frames)}")
 
-        print("\nKey overlap frame percentages:")
-        for overlap in ("night+clear", "day+clear", "sunset+clear"):
-            count = stats.overlap_frame_counts.get(overlap, 0)
-            print(f"  {overlap}: {_format_percentage(count, stats.total_frames)}")
+        print("\nOverlap (% of frames):")
+        print(f"  night+clear: {_format_percentage(stats.night_clear_frames, stats.total_frames)}")
+        print(f"  day+clear: {_format_percentage(stats.day_clear_frames, stats.total_frames)}")
+        print(f"  sunset+clear: {_format_percentage(stats.sunset_clear_frames, stats.total_frames)}")
 
     if debug_eligibility:
         print("\n=== Rare Eligibility Summary ===")
