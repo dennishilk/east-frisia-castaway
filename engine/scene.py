@@ -14,35 +14,160 @@ from engine.weather import WeatherSystem
 
 # Calm dusk-like palette for a minimal atmosphere.
 SKY_COLOR = (24, 34, 58)
-WATER_COLOR = (18, 56, 84)
-ISLET_COLOR = (62, 74, 52)
-CHARACTER_COLOR = (214, 196, 150)
+WATERLINE_COLOR = (46, 58, 76)
+SAND_BASE_COLOR = (70, 80, 60)
+SAND_DEPTH_COLOR = (58, 68, 50)
+SAND_DITHER_COLOR = (63, 73, 54)
 
 
 @dataclass
+class Waterline:
+    """Subtle horizontal waterline with very slow sinusoidal drift."""
+
+    y: int
+    width: int
+    thickness: int = 2
+    base_amplitude: float = 2.0
+
+    def render(self, surface: pygame.Surface, session_time: float, time_of_day: str) -> None:
+        """Render a calm 1-2 pixel band with minimal horizontal motion."""
+        night_factor = 0.7 if time_of_day == "night" else 1.0
+        amplitude = self.base_amplitude * night_factor
+        wave_input = max(-10_000.0, min(10_000.0, session_time * 0.1))
+        offset = int(round(math.sin(wave_input) * amplitude))
+
+        for row in range(self.thickness):
+            line_y = self.y + row
+            segment_shift = (offset + row) % 8
+            for x in range(-8 + segment_shift, self.width + 8, 8):
+                pygame.draw.line(surface, WATERLINE_COLOR, (x, line_y), (x + 5, line_y))
+
+
 class IdleCharacter:
-    """Simple idle figure with subtle horizontal sway animation."""
+    """Minimal pixel-art character with slow sway and subtle bobbing."""
 
-    base_x: int
-    base_y: int
-    width: int = 6
-    height: int = 12
-    sway_speed: float = 1.1
-    sway_amplitude: float = 2.0
-    animation_time: float = 0.0
+    def __init__(self, base_x: int, base_y: int) -> None:
+        self.base_x = base_x
+        self.base_y = base_y
+        self._session_time = 0.0
+        self._weather_name = "clear"
+        self._frames = self._build_frames()
 
-    def update(self, delta_time: float) -> None:
-        """Advance idle animation timing with bounded precision drift."""
-        self.animation_time = (self.animation_time + delta_time) % (2.0 * math.pi)
+    @staticmethod
+    def _build_frames() -> list[pygame.Surface]:
+        palette = {
+            " ": (0, 0, 0, 0),
+            "s": (210, 194, 152, 255),
+            "h": (184, 164, 122, 255),
+            "c": (76, 86, 66, 255),
+            "d": (58, 66, 50, 255),
+            "a": (170, 154, 118, 255),
+        }
+
+        frame_patterns = [
+            [
+                "     ss     ",
+                "    shhs    ",
+                "    shhs    ",
+                "    shhs    ",
+                "    ssss    ",
+                "    cccc    ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   a   a    ",
+                "  aa   aa   ",
+                "  aa   aa   ",
+                "  aa   aa   ",
+                "  aa   aa   ",
+                "            ",
+            ],
+            [
+                "     ss     ",
+                "    shhs    ",
+                "    shhs    ",
+                "    shhs    ",
+                "    ssss    ",
+                "    cccc    ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "   dccccc   ",
+                "    a   a   ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "            ",
+            ],
+            [
+                "     ss     ",
+                "    shhs    ",
+                "    shhs    ",
+                "    shhs    ",
+                "    ssss    ",
+                "    cccc    ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "   cccccd   ",
+                "    a   a   ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "   aa   aa  ",
+                "            ",
+            ],
+        ]
+
+        frames: list[pygame.Surface] = []
+        for pattern in frame_patterns:
+            frame_surface = pygame.Surface((12, 20), pygame.SRCALPHA)
+            for y, row in enumerate(pattern):
+                for x, marker in enumerate(row):
+                    color = palette[marker]
+                    if color[3] > 0:
+                        frame_surface.set_at((x, y), color)
+            frames.append(frame_surface)
+        return frames
+
+    def update(self, session_time: float, weather_name: str) -> None:
+        """Sync animation with absolute time to avoid frame drift."""
+        self._session_time = session_time
+        self._weather_name = weather_name
 
     def draw(self, surface: pygame.Surface) -> None:
-        """Draw the character as a minimal retro rectangle."""
-        offset = int(self.sway_amplitude * math.sin(self.animation_time * self.sway_speed))
-        pygame.draw.rect(
-            surface,
-            CHARACTER_COLOR,
-            pygame.Rect(self.base_x + offset, self.base_y, self.width, self.height),
-        )
+        """Draw with slow sway and tiny shoreline bobbing."""
+        sway_amp = 1.3
+        if self._weather_name == "cloudy":
+            sway_amp = 1.9
+
+        sway_x = int(round(math.sin(self._session_time * 2.0 * math.pi * 0.6) * sway_amp))
+        bob_y = int(round(math.sin(self._session_time * 2.0 * math.pi * 0.45) * 0.8))
+
+        phase = (math.sin(self._session_time * 2.0 * math.pi * 0.75) + 1.0) * 0.5
+        if phase < 0.33:
+            frame_index = 0
+        elif phase < 0.66:
+            frame_index = 1
+        else:
+            frame_index = 2
+
+        frame = self._frames[frame_index]
+        surface.blit(frame, (self.base_x + sway_x, self.base_y + bob_y))
 
 
 class Scene:
@@ -53,11 +178,13 @@ class Scene:
         self.event_manager = EventManager("events/events.json")
         self.day_cycle = DayCycle()
         self.weather = WeatherSystem()
-        self.idle_character = IdleCharacter(base_x=self.width // 2 - 3, base_y=self.height - 58)
 
-        self._water_rect = pygame.Rect(0, self.height // 2 + 36, self.width, self.height // 2)
-        self._islet_rect = pygame.Rect(self.width // 2 - 26, self.height // 2 + 18, 52, 24)
+        sand_top = self.height // 2 + 22
+        self._sand_rect = pygame.Rect(0, sand_top, self.width, self.height - sand_top)
+        self._waterline = Waterline(y=sand_top - 2, width=self.width)
+        self.idle_character = IdleCharacter(base_x=self.width // 2 - 6, base_y=sand_top - 22)
 
+        self._sand_surface = self._build_sand_surface()
         self._weather_overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self._day_overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
@@ -65,15 +192,32 @@ class Scene:
         self._time_of_day = "day"
         self._weather_name = "clear"
 
+    def _build_sand_surface(self) -> pygame.Surface:
+        """Create static two-tone sand with lightweight dithering."""
+        sand = pygame.Surface((self._sand_rect.width, self._sand_rect.height))
+        sand.fill(SAND_BASE_COLOR)
+
+        depth_height = self._sand_rect.height // 3
+        depth_rect = pygame.Rect(0, self._sand_rect.height - depth_height, self._sand_rect.width, depth_height)
+        pygame.draw.rect(sand, SAND_DEPTH_COLOR, depth_rect)
+
+        for y in range(0, self._sand_rect.height, 2):
+            start_x = (y // 2) % 2
+            for x in range(start_x, self._sand_rect.width, 4):
+                sand.set_at((x, y), SAND_DITHER_COLOR)
+
+        return sand
+
     def update(self, delta_time: float, timer: SessionTimer) -> None:
         """Update animation, environmental state, and event scheduling."""
+
         self._session_time = timer.session_time
         self._time_of_day = self.day_cycle.get_time_of_day(timer.session_time)
 
         self.weather.update(timer.session_time)
         self._weather_name = self.weather.get_current_weather(timer.session_time)
 
-        self.idle_character.update(delta_time)
+        self.idle_character.update(timer.session_time, self._weather_name)
         self.event_manager.update(
             delta_time,
             timer,
@@ -105,19 +249,23 @@ class Scene:
 
     def render(self, surface: pygame.Surface) -> None:
         """Render static atmosphere and active event overlays."""
-        # 1) Background
+        # 1) Background sky
         surface.fill(SKY_COLOR)
-        pygame.draw.rect(surface, WATER_COLOR, self._water_rect)
-        pygame.draw.rect(surface, ISLET_COLOR, self._islet_rect)
 
-        # 2) Weather overlays
+        # 2) Waterline
+        self._waterline.render(surface, self._session_time, self._time_of_day)
+
+        # 3) Sandbank
+        surface.blit(self._sand_surface, self._sand_rect.topleft)
+
+        # 4) Weather overlays
         self._render_weather_overlay(surface)
 
-        # 3) Day/Night overlay
+        # 5) Day/Night overlay
         self._render_day_overlay(surface)
 
-        # 4) Character
+        # 6) Character
         self.idle_character.draw(surface)
 
-        # 5) Active event render
+        # 7) Active event render
         self.event_manager.render(surface)
