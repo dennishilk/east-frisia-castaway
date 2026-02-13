@@ -52,6 +52,7 @@ class EventManager:
     def __init__(self, event_file: str, trace_rare: bool = False) -> None:
         self.rare_min_interval = 300.0
         self.rare_retry_interval = 20.0
+        self.rare_jitter_window = 10.0
         self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
@@ -122,14 +123,23 @@ class EventManager:
 
         rare_min_interval = scheduler.get("rare_min_interval")
         rare_retry_interval = scheduler.get("rare_retry_interval")
+        rare_jitter_window = scheduler.get("rare_jitter_window")
         ambient_min_interval = scheduler.get("ambient_min_interval")
 
         if isinstance(rare_min_interval, (int, float)) and rare_min_interval >= 0.0:
             self.rare_min_interval = float(rare_min_interval)
         if isinstance(rare_retry_interval, (int, float)) and rare_retry_interval >= 0.0:
             self.rare_retry_interval = float(rare_retry_interval)
+        if isinstance(rare_jitter_window, (int, float)) and rare_jitter_window >= 0.0:
+            self.rare_jitter_window = float(rare_jitter_window)
         if isinstance(ambient_min_interval, (int, float)) and ambient_min_interval >= 0.0:
             self.ambient_min_interval = float(ambient_min_interval)
+
+    def _schedule_next_rare_after_trigger(self, session_time: float) -> None:
+        """Set next rare check with deterministic micro-jitter to break phase lock."""
+        jitter = random.uniform(-self.rare_jitter_window, self.rare_jitter_window)
+        next_check_time = session_time + self.rare_min_interval + jitter
+        self._next_rare_check_time = max(session_time + 1e-6, next_check_time)
 
     def _parse_phases(self, entry: dict[str, Any], index: int) -> tuple[tuple[EventPhase, ...], float] | None:
         phases_raw = entry.get("phases")
@@ -488,7 +498,7 @@ class EventManager:
         self._event_state = self._build_event_state(self.active_event)
         self._last_event_time_by_name[self.active_event.name] = session_time
         if self.active_event.event_type == "rare":
-            self._next_rare_check_time = session_time + self.rare_min_interval
+            self._schedule_next_rare_after_trigger(session_time)
         else:
             self._last_ambient_event_time = session_time
 
