@@ -29,43 +29,48 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## XScreenSaver Integration
+## Phase 3: XScreenSaver Integration (X11)
 
-Use the wrapper command below in XScreenSaver:
+### Dependencies
 
-```bash
-east-frisia-castaway --window-id %w
-```
+- xscreensaver
+- python3
+- pygame
 
-### Modes
+### Quick Test Commands
 
-Preview mode:
-
-```bash
-east-frisia-castaway --preview
-```
-
-Standalone fullscreen mode:
+Preview-like embedding smoke test:
 
 ```bash
-east-frisia-castaway --fullscreen
+XSCREENSAVER_WINDOW=0 SDL_VIDEODRIVER=x11 python main.py --preview
 ```
 
-Root-target mode (with graceful fallback):
+Normal fullscreen run:
 
 ```bash
-east-frisia-castaway --root
+python main.py --fullscreen
 ```
 
-Debug logging:
+### Real XScreenSaver Setup
+
+1. Install `xscreensaver`.
+2. Open `xscreensaver-demo`.
+3. Edit `~/.xscreensaver` and add the line documented in `docs/xscreensaver-hack-entry.txt`.
+4. Restart XScreenSaver or reload settings from `xscreensaver-demo`.
+
+The wrapper script used for real XScreenSaver launches is:
 
 ```bash
-east-frisia-castaway --debug
+scripts/east-frisia-castaway-xscreensaver
 ```
 
-If no explicit mode is provided and `XSCREENSAVER_WINDOW` exists, the wrapper defaults to window embedding automatically.
+It maps `XSCREENSAVER_WINDOW` to `SDL_WINDOWID`, defaults `SDL_VIDEODRIVER` to `x11` when not already set, and runs `python main.py --fullscreen`.
 
-### Install / Uninstall
+### Shell Note
+
+On shells such as fish, environment export syntax differs from POSIX shells. Use fish-compatible `set -x` forms when exporting variables manually.
+
+### Existing Install / Uninstall Helper Scripts
 
 Install user-local wrapper and register in `~/.xscreensaver`:
 
