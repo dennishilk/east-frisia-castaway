@@ -73,6 +73,89 @@
           "type": "fade"
         }
       ]
+    },
+    {
+      "id": "distant_ferry",
+      "type": "rare",
+      "weight": 2,
+      "cooldown": 1200,
+      "min_runtime": 900,
+      "color": [
+        44,
+        52,
+        64
+      ],
+      "conditions": {
+        "time_of_day": [
+          "day",
+          "sunset"
+        ],
+        "weather": [
+          "clear"
+        ]
+      },
+      "phases": [
+        {
+          "duration": 5,
+          "type": "approach"
+        },
+        {
+          "duration": 20,
+          "type": "pass"
+        },
+        {
+          "duration": 5,
+          "type": "fade"
+        }
+      ]
+    },
+    {
+      "id": "shooting_star",
+      "type": "rare",
+      "weight": 1,
+      "cooldown": 1800,
+      "min_runtime": 600,
+      "color": [
+        236,
+        242,
+        255
+      ],
+      "conditions": {
+        "time_of_day": [
+          "night"
+        ]
+      },
+      "phases": [
+        {
+          "duration": 1.5,
+          "type": "flash"
+        },
+        {
+          "duration": 0.5,
+          "type": "fade"
+        }
+      ]
+    },
+    {
+      "id": "aurora_faint",
+      "type": "rare",
+      "weight": 1,
+      "cooldown": 2400,
+      "min_runtime": 1200,
+      "color": [
+        112,
+        170,
+        132
+      ],
+      "conditions": {
+        "time_of_day": [
+          "night"
+        ],
+        "weather": [
+          "clear"
+        ]
+      },
+      "duration": 30
     }
   ]
 }
