@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "name": "soft_gull_pass",
+      "weight": 70,
+      "cooldown": 6,
+      "min_runtime": 0,
+      "duration": 5,
+      "color": [94, 121, 146]
+    },
+    {
+      "name": "distant_fog_shift",
+      "weight": 24,
+      "cooldown": 12,
+      "min_runtime": 18,
+      "duration": 7,
+      "color": [86, 104, 120]
+    },
+    {
+      "name": "moon_glint",
+      "weight": 6,
+      "cooldown": 20,
+      "min_runtime": 45,
+      "duration": 8,
+      "color": [132, 138, 156]
+    }
+  ]
+}
