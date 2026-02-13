@@ -51,9 +51,7 @@ class EventManager:
 
     def __init__(self, event_file: str, trace_rare: bool = False) -> None:
         self.rare_min_interval = 300.0
-        self.rare_retry_interval = 20.0
-        self.rare_jitter_window = 10.0
-        self.tier1_grace_period = 180.0
+        self.tier2_fallback_delay = 180.0
         self.ambient_min_interval = 5.0
         self.events = self._load_events(event_file)
         self._ambient_events = tuple(event for event in self.events if event.event_type != "rare")
@@ -68,7 +66,8 @@ class EventManager:
         self._current_session_time = 0.0
         self._event_state: dict[str, float] = {}
         self._last_event_time_by_name: dict[str, float] = {}
-        self._next_rare_check_time = 0.0
+        self._next_rare_earliest_time = 0.0
+        self._rare_slot_open = False
         self._rare_slot_open_time: float | None = None
         self._last_ambient_event_time = float("-inf")
         self._ferry_sprite = self._build_ferry_sprite()
@@ -124,27 +123,15 @@ class EventManager:
             return
 
         rare_min_interval = scheduler.get("rare_min_interval")
-        rare_retry_interval = scheduler.get("rare_retry_interval")
-        rare_jitter_window = scheduler.get("rare_jitter_window")
-        tier1_grace_period = scheduler.get("tier1_grace_period")
+        tier2_fallback_delay = scheduler.get("tier2_fallback_delay")
         ambient_min_interval = scheduler.get("ambient_min_interval")
 
         if isinstance(rare_min_interval, (int, float)) and rare_min_interval >= 0.0:
             self.rare_min_interval = float(rare_min_interval)
-        if isinstance(rare_retry_interval, (int, float)) and rare_retry_interval >= 0.0:
-            self.rare_retry_interval = float(rare_retry_interval)
-        if isinstance(rare_jitter_window, (int, float)) and rare_jitter_window >= 0.0:
-            self.rare_jitter_window = float(rare_jitter_window)
-        if isinstance(tier1_grace_period, (int, float)) and tier1_grace_period >= 0.0:
-            self.tier1_grace_period = float(tier1_grace_period)
+        if isinstance(tier2_fallback_delay, (int, float)) and tier2_fallback_delay >= 0.0:
+            self.tier2_fallback_delay = float(tier2_fallback_delay)
         if isinstance(ambient_min_interval, (int, float)) and ambient_min_interval >= 0.0:
             self.ambient_min_interval = float(ambient_min_interval)
-
-    def _schedule_next_rare_after_trigger(self, session_time: float) -> None:
-        """Set next rare check with deterministic micro-jitter to break phase lock."""
-        jitter = random.uniform(0.0, self.rare_jitter_window)
-        next_check_time = session_time + self.rare_min_interval + jitter
-        self._next_rare_check_time = max(self._next_rare_check_time, next_check_time)
 
     def _parse_phases(self, entry: dict[str, Any], index: int) -> tuple[tuple[EventPhase, ...], float] | None:
         phases_raw = entry.get("phases")
@@ -309,9 +296,6 @@ class EventManager:
     ) -> list[SceneEvent]:
         return [event for event in events if self._is_event_eligible(event, session_time, environment)]
 
-    def _rare_slot_open(self, session_time: float) -> bool:
-        return session_time >= self._next_rare_check_time
-
     def _ambient_slot_open(self, session_time: float) -> bool:
         return (session_time - self._last_ambient_event_time) >= self.ambient_min_interval
 
@@ -436,9 +420,11 @@ class EventManager:
         session_time = timer.session_time
         selected_event: SceneEvent | None = None
 
-        rare_evaluated = False
-        if self._rare_slot_open(session_time):
-            rare_evaluated = True
+        if session_time >= self._next_rare_earliest_time and not self._rare_slot_open:
+            self._rare_slot_open = True
+            self._rare_slot_open_time = session_time
+
+        if self._rare_slot_open:
             if self._rare_slot_open_time is None:
                 self._rare_slot_open_time = session_time
 
@@ -459,7 +445,7 @@ class EventManager:
                 slot_open_time = self._rare_slot_open_time
                 grace_expired = (
                     slot_open_time is not None
-                    and (session_time - slot_open_time) >= self.tier1_grace_period
+                    and (session_time - slot_open_time) >= self.tier2_fallback_delay
                 )
                 if grace_expired:
                     rare_eligible_tier2 = self._eligible_pool(self._rare_tier2_events, session_time, environment)
@@ -482,10 +468,9 @@ class EventManager:
                 rng_state_used,
             )
 
-            if selected_event is None:
-                self._next_rare_check_time = session_time + self.rare_retry_interval
-            else:
-                self._rare_slot_open_time = None
+            if selected_event is not None:
+                self._activate_selected_event(selected_event, session_time, timer)
+                return
 
         if selected_event is None and self._ambient_slot_open(session_time):
             ambient_eligible = self._eligible_pool(self._ambient_events, session_time, environment)
@@ -499,6 +484,11 @@ class EventManager:
         if selected_event is None:
             return
 
+        self._activate_selected_event(selected_event, session_time, timer)
+
+    def _activate_selected_event(self, selected_event: SceneEvent, session_time: float, timer: SessionTimer) -> None:
+        """Apply state updates for a selected event and mark timer trigger."""
+
         self.active_event = selected_event
         self._active_event_start_time = session_time
         self._active_event_end_time = session_time + self.active_event.duration
@@ -506,12 +496,11 @@ class EventManager:
         self._event_state = self._build_event_state(self.active_event)
         self._last_event_time_by_name[self.active_event.name] = session_time
         if self.active_event.event_type == "rare":
-            self._schedule_next_rare_after_trigger(session_time)
+            self._rare_slot_open = False
+            self._rare_slot_open_time = None
+            self._next_rare_earliest_time = session_time + self.rare_min_interval
         else:
             self._last_ambient_event_time = session_time
-
-        if rare_evaluated and self.active_event.event_type != "rare":
-            self._next_rare_check_time = session_time + self.rare_retry_interval
         timer.mark_event_triggered()
 
     @staticmethod
