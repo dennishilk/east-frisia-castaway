@@ -1,28 +1,78 @@
 {
   "events": [
     {
-      "name": "soft_gull_pass",
+      "id": "soft_gull_pass",
+      "type": "ambient",
       "weight": 70,
       "cooldown": 6,
       "min_runtime": 0,
       "duration": 5,
-      "color": [94, 121, 146]
+      "color": [
+        94,
+        121,
+        146
+      ]
     },
     {
-      "name": "distant_fog_shift",
+      "id": "distant_fog_shift",
+      "type": "ambient",
       "weight": 24,
       "cooldown": 12,
       "min_runtime": 18,
       "duration": 7,
-      "color": [86, 104, 120]
+      "color": [
+        86,
+        104,
+        120
+      ]
     },
     {
-      "name": "moon_glint",
+      "id": "moon_glint",
+      "type": "rare",
       "weight": 6,
       "cooldown": 20,
       "min_runtime": 45,
       "duration": 8,
-      "color": [132, 138, 156]
+      "color": [
+        132,
+        138,
+        156
+      ]
+    },
+    {
+      "id": "borkum_buoy",
+      "type": "rare",
+      "weight": 1,
+      "cooldown": 900,
+      "min_runtime": 1800,
+      "color": [
+        120,
+        132,
+        142
+      ],
+      "conditions": {
+        "time_of_day": [
+          "day",
+          "sunset"
+        ],
+        "weather": [
+          "clear"
+        ]
+      },
+      "phases": [
+        {
+          "duration": 5,
+          "type": "approach"
+        },
+        {
+          "duration": 15,
+          "type": "drift"
+        },
+        {
+          "duration": 5,
+          "type": "fade"
+        }
+      ]
     }
   ]
 }
