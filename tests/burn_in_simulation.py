@@ -28,7 +28,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from engine.event_manager import EventManager, SceneEvent
+from engine.day_cycle import DayCycle
 from engine.timer import SessionTimer
+from engine.weather import WeatherSystem
 
 FPS = 20
 FIXED_DT = 1.0 / FPS
@@ -96,6 +98,10 @@ class SimulationStats:
     memory_peak_bytes: int
     top_allocation_increases: list[AllocationDiff]
     rare_ratio_warning: str | None
+    weather_frame_counts: dict[str, int]
+    time_of_day_frame_counts: dict[str, int]
+    overlap_frame_counts: dict[str, int]
+    rare_eligibility_summary: dict[str, dict[str, int]]
 
 
 
@@ -151,6 +157,8 @@ def run_simulation(
     hours: float,
     seed: int | None,
     debug: bool,
+    profile_climate: bool,
+    debug_eligibility: bool,
     memory_snapshot_interval: int,
 ) -> SimulationStats:
     """Execute deterministic burn-in loop and return captured metrics."""
@@ -174,6 +182,10 @@ def run_simulation(
 
     iteration_total_seconds = 0.0
     delta_accumulator = 0.0
+    weather_frame_counts: dict[str, int] = defaultdict(int)
+    time_of_day_frame_counts: dict[str, int] = defaultdict(int)
+    overlap_frame_counts: dict[str, int] = defaultdict(int)
+    rare_eligibility_summary: dict[str, dict[str, int]] = {}
 
     tracemalloc.start()
     memory_baseline_bytes = 0
@@ -183,8 +195,24 @@ def run_simulation(
     with patched_perf_counter(fake_clock):
         timer = SessionTimer()
         manager = EventManager(str(EVENT_FILE))
+        day_cycle = DayCycle()
+        weather = WeatherSystem()
         memory_baseline_bytes = tracemalloc.get_traced_memory()[0]
         baseline_snapshot = _filtered_snapshot()
+
+        if debug_eligibility:
+            rare_eligibility_summary = {
+                event.name: {
+                    "eligible": 0,
+                    "weather mismatch": 0,
+                    "time_of_day mismatch": 0,
+                    "cooldown": 0,
+                    "min_runtime": 0,
+                    "no conditions": 0,
+                }
+                for event in manager.events
+                if event.event_type == "rare"
+            }
 
         if debug:
             print(f"Loaded events: {[event.name for event in manager.events]}")
@@ -200,6 +228,61 @@ def run_simulation(
             fake_clock.advance(FIXED_DT)
             delta_time = timer.tick()
             delta_accumulator += delta_time
+
+            weather.update(timer.session_time)
+            current_time_of_day = day_cycle.get_time_of_day(timer.session_time)
+            current_weather = weather.get_current_weather(timer.session_time)
+            environment = {"time_of_day": current_time_of_day, "weather": current_weather}
+
+            if profile_climate:
+                weather_frame_counts[current_weather] += 1
+                time_of_day_frame_counts[current_time_of_day] += 1
+                overlap_frame_counts["night+clear"] += int(
+                    current_time_of_day == "night" and current_weather == "clear"
+                )
+                overlap_frame_counts["day+clear"] += int(
+                    current_time_of_day == "day" and current_weather == "clear"
+                )
+                overlap_frame_counts["sunset+clear"] += int(
+                    current_time_of_day == "sunset" and current_weather == "clear"
+                )
+                overlap_frame_counts["night_any_weather"] += int(current_time_of_day == "night")
+                overlap_frame_counts["clear_any_time"] += int(current_weather == "clear")
+
+            if debug_eligibility and manager.active_event is None and manager._rare_slot_open(timer.session_time):
+                rare_events = [event for event in manager.events if event.event_type == "rare"]
+                print(f"[eligibility] t={timer.session_time:.3f} rare slot check")
+                print(f"[eligibility] rares={', '.join(event.name for event in rare_events)}")
+                for event in rare_events:
+                    event_summary = rare_eligibility_summary[event.name]
+
+                    reasons: list[str] = []
+                    if timer.session_time < event.min_runtime:
+                        reasons.append("min_runtime")
+                    if manager._time_since_event(timer.session_time, event.name) < event.cooldown:
+                        reasons.append("cooldown")
+
+                    weather_allowed = event.conditions.get("weather")
+                    if weather_allowed is not None and current_weather not in weather_allowed:
+                        reasons.append("weather mismatch")
+
+                    time_allowed = event.conditions.get("time_of_day")
+                    if time_allowed is not None and current_time_of_day not in time_allowed:
+                        reasons.append("time_of_day mismatch")
+
+                    if not event.conditions:
+                        reasons.append("no conditions")
+
+                    eligible = manager._is_event_eligible(event, timer.session_time, environment)
+                    if eligible:
+                        event_summary["eligible"] += 1
+                        print(f"  - {event.name}: Eligible=True")
+                    else:
+                        for reason in reasons:
+                            if reason in event_summary:
+                                event_summary[reason] += 1
+                        reason_text = ", ".join(reasons) if reasons else "unknown"
+                        print(f"  - {event.name}: Eligible=False ({reason_text})")
 
             event_before = manager.active_event
             manager.update(delta_time, timer)
@@ -323,10 +406,23 @@ def run_simulation(
         memory_peak_bytes=memory_peak,
         top_allocation_increases=latest_top_growth,
         rare_ratio_warning=rare_ratio_warning,
+        weather_frame_counts=dict(sorted(weather_frame_counts.items())),
+        time_of_day_frame_counts=dict(sorted(time_of_day_frame_counts.items())),
+        overlap_frame_counts=dict(sorted(overlap_frame_counts.items())),
+        rare_eligibility_summary=rare_eligibility_summary,
     )
 
 
-def print_report(hours: float, stats: SimulationStats) -> None:
+def _format_percentage(count: int, total: int) -> str:
+    return f"{(100.0 * count / total):.2f}%" if total > 0 else "0.00%"
+
+
+def print_report(
+    hours: float,
+    stats: SimulationStats,
+    profile_climate: bool,
+    debug_eligibility: bool,
+) -> None:
     """Print required burn-in report metrics."""
 
     print("\n=== Burn-In Simulation Report ===")
@@ -388,12 +484,48 @@ def print_report(hours: float, stats: SimulationStats) -> None:
     if stats.rare_ratio_warning:
         print(f"WARNING: {stats.rare_ratio_warning}")
 
+    if profile_climate:
+        print("\n=== Climate Distribution ===")
+        print("\nWeather frame distribution (percentage):")
+        for weather_name, count in stats.weather_frame_counts.items():
+            print(f"  {weather_name}: {_format_percentage(count, stats.total_frames)}")
+
+        print("\nTime-of-day frame distribution (percentage):")
+        for time_of_day in ("day", "sunset", "night", "dawn"):
+            count = stats.time_of_day_frame_counts.get(time_of_day, 0)
+            print(f"  {time_of_day}: {_format_percentage(count, stats.total_frames)}")
+
+        print("\nKey overlap frame percentages:")
+        for overlap in ("night+clear", "day+clear", "sunset+clear"):
+            count = stats.overlap_frame_counts.get(overlap, 0)
+            print(f"  {overlap}: {_format_percentage(count, stats.total_frames)}")
+
+    if debug_eligibility:
+        print("\n=== Rare Eligibility Summary ===")
+        for event_name, counts in sorted(stats.rare_eligibility_summary.items()):
+            print(f"\n{event_name}:")
+            print(f"  Times eligible: {counts['eligible']}")
+            print(f"  Rejected (weather mismatch): {counts['weather mismatch']}")
+            print(f"  Rejected (time_of_day mismatch): {counts['time_of_day mismatch']}")
+            print(f"  Rejected (cooldown): {counts['cooldown']}")
+            print(f"  Rejected (min_runtime): {counts['min_runtime']}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Headless burn-in simulation for event timing.")
     parser.add_argument("--seed", type=int, default=None, help="Fixed RNG seed for deterministic runs")
     parser.add_argument("--hours", type=float, default=DEFAULT_HOURS, help="Simulated hours to run")
     parser.add_argument("--debug", action="store_true", help="Print per-trigger and memory debug output")
+    parser.add_argument(
+        "--profile-climate",
+        action="store_true",
+        help="Enable climate distribution diagnostics",
+    )
+    parser.add_argument(
+        "--debug-eligibility",
+        action="store_true",
+        help="Print rare-slot eligibility diagnostics and summary",
+    )
     parser.add_argument(
         "--memory-snapshot-interval",
         type=int,
@@ -409,9 +541,16 @@ def main() -> None:
         hours=args.hours,
         seed=args.seed,
         debug=args.debug,
+        profile_climate=args.profile_climate,
+        debug_eligibility=args.debug_eligibility,
         memory_snapshot_interval=args.memory_snapshot_interval,
     )
-    print_report(hours=args.hours, stats=stats)
+    print_report(
+        hours=args.hours,
+        stats=stats,
+        profile_climate=args.profile_climate,
+        debug_eligibility=args.debug_eligibility,
+    )
 
 
 if __name__ == "__main__":
