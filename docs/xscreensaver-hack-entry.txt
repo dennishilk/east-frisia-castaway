@@ -1,0 +1,5 @@
+Add the following line to your `~/.xscreensaver` file:
+
+"East Frisia Castaway"  /path/to/scripts/east-frisia-castaway-xscreensaver  \n\
+
+Use an absolute path to the script. Replace `/path/to/` with your actual installation path.

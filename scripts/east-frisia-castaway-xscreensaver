@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
+
+if [ -n "${XSCREENSAVER_WINDOW:-}" ]; then
+  export SDL_WINDOWID="$XSCREENSAVER_WINDOW"
+fi
+
+if [ -z "${SDL_VIDEODRIVER:-}" ]; then
+  export SDL_VIDEODRIVER="x11"
+fi
+
+if [ "${EFC_DEBUG:-0}" = "1" ]; then
+  exec "$PYTHON_BIN" "$REPO_ROOT/main.py" --fullscreen --debug
+fi
+
+exec "$PYTHON_BIN" "$REPO_ROOT/main.py" --fullscreen
