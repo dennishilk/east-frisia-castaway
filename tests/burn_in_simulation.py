@@ -159,6 +159,7 @@ def run_simulation(
     debug: bool,
     profile_climate: bool,
     debug_eligibility: bool,
+    trace_rare: bool,
     memory_snapshot_interval: int,
 ) -> SimulationStats:
     """Execute deterministic burn-in loop and return captured metrics."""
@@ -194,7 +195,7 @@ def run_simulation(
 
     with patched_perf_counter(fake_clock):
         timer = SessionTimer()
-        manager = EventManager(str(EVENT_FILE))
+        manager = EventManager(str(EVENT_FILE), trace_rare=trace_rare)
         day_cycle = DayCycle()
         weather = WeatherSystem()
         memory_baseline_bytes = tracemalloc.get_traced_memory()[0]
@@ -285,7 +286,7 @@ def run_simulation(
                         print(f"  - {event.name}: Eligible=False ({reason_text})")
 
             event_before = manager.active_event
-            manager.update(delta_time, timer)
+            manager.update(delta_time, timer, environment if trace_rare else None)
             active_count = 1 if manager.active_event is not None else 0
             max_simultaneous_events = max(max_simultaneous_events, active_count)
 
@@ -527,6 +528,11 @@ def parse_args() -> argparse.Namespace:
         help="Print rare-slot eligibility diagnostics and summary",
     )
     parser.add_argument(
+        "--trace-rare",
+        action="store_true",
+        help="Enable structured rare-event selection tracing",
+    )
+    parser.add_argument(
         "--memory-snapshot-interval",
         type=int,
         default=DEFAULT_MEMORY_SNAPSHOT_INTERVAL,
@@ -543,6 +549,7 @@ def main() -> None:
         debug=args.debug,
         profile_climate=args.profile_climate,
         debug_eligibility=args.debug_eligibility,
+        trace_rare=args.trace_rare,
         memory_snapshot_interval=args.memory_snapshot_interval,
     )
     print_report(
