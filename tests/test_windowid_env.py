@@ -42,6 +42,23 @@ class WindowIdEnvironmentTests(unittest.TestCase):
             else:
                 os.environ["SDL_WINDOWID"] = old_sdl_windowid
 
+    def test_invalid_env_window_id_is_ignored(self) -> None:
+        old_xss_window = os.environ.get("XSCREENSAVER_WINDOW")
+
+        os.environ["XSCREENSAVER_WINDOW"] = "not-a-window-id"
+        try:
+            args = main.parse_arguments([])
+            logger = main.configure_logging(False)
+            config = main.resolve_launch_config(args, logger)
+            self.assertEqual(config.mode, "fullscreen")
+            self.assertIsNone(config.embed_window_id)
+        finally:
+            if old_xss_window is None:
+                os.environ.pop("XSCREENSAVER_WINDOW", None)
+            else:
+                os.environ["XSCREENSAVER_WINDOW"] = old_xss_window
+
+
 
 if __name__ == "__main__":
     unittest.main()

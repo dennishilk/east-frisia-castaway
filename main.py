@@ -57,6 +57,8 @@ def parse_arguments(argv: list[str] | None = None) -> RuntimeArgs:
 
     if args.window_id is not None and args.root:
         parser.error("--window-id and --root cannot be used together")
+    if args.window_id is not None and args.window_id <= 0:
+        parser.error("--window-id must be a positive integer")
     if args.preview and (args.window_id is not None or args.root):
         parser.error("--preview cannot be used with --window-id or --root")
     if args.fullscreen and (args.preview or args.window_id is not None or args.root):
@@ -113,6 +115,12 @@ def _resolve_root_window_id() -> str | None:
 def resolve_launch_config(args: RuntimeArgs, logger: logging.Logger) -> LaunchConfig:
     """Resolve launch mode based on CLI flags and XScreenSaver environment."""
     env_window = os.environ.get("XSCREENSAVER_WINDOW")
+
+    if env_window is not None:
+        env_window = env_window.strip()
+        if env_window and not env_window.isdigit():
+            logger.info("ignoring invalid XSCREENSAVER_WINDOW value: %r", env_window)
+            env_window = None
 
     if args.window_id is not None:
         return LaunchConfig(mode="embed", embed_window_id=str(args.window_id))
