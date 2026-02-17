@@ -23,6 +23,10 @@ class CliParseTests(unittest.TestCase):
         args = main.parse_arguments(["--window-id", "1234"])
         self.assertEqual(args.window_id, 1234)
 
+    def test_non_positive_window_id_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            main.parse_arguments(["--window-id", "0"])
+
     def test_conflicting_root_and_window_id(self) -> None:
         with self.assertRaises(SystemExit):
             main.parse_arguments(["--root", "--window-id", "99"])

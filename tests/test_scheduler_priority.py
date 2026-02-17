@@ -32,14 +32,17 @@ class SchedulerPriorityTests(unittest.TestCase):
     def test_tier2_rare_is_used_as_fallback(self) -> None:
         manager = EventManager("events/events.json")
         timer = SessionTimer()
-        timer.session_time = 100.0
-
-        environment = {"time_of_day": "day", "weather": "rain"}
 
         state = random.getstate()
         try:
             random.seed(11)
-            manager.activate(timer, environment)
+
+            timer.session_time = 0.0
+            manager.activate(timer, {"time_of_day": "day", "weather": "rain"})
+            manager.active_event = None
+
+            timer.session_time = 200.0
+            manager.activate(timer, {"time_of_day": "day", "weather": "rain"})
         finally:
             random.setstate(state)
 
